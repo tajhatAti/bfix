@@ -29,6 +29,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "API_ID", 12345)
     monkeypatch.setattr(cfg, "API_HASH", "0" * 32)
     monkeypatch.setattr(cfg, "WEB_TITLE", "Test Store")
+    monkeypatch.setattr(cfg, "SUPPORT_CONTACT", "")
     import web.dashboard as dashboard
     dashboard._LOGIN_FAILURES.clear()
     return TestClient(dashboard.app)
@@ -72,6 +73,14 @@ def test_public_store_page_shows_files_for_free_stores(client):
     assert "Interstellar" in page.text
 
 
+def test_private_store_actions_do_not_use_manage_label(client):
+    _store("Private Store")
+    page = client.get("/admin/stores", headers=_auth())
+    assert page.status_code == 200
+    assert "Open" in page.text
+    assert "Manage" not in page.text
+
+
 def test_health_is_public(client):
     data = client.get("/health").json()
     assert data["ok"] is True
@@ -92,13 +101,29 @@ def test_admin_panel_requires_valid_credentials(client):
     assert client.get("/admin", headers=_auth()).status_code == 200
 
 
-def test_public_site_hides_admin_entry_but_direct_admin_path_is_protected(client):
-    public = client.get("/")
-    assert "Admin sign in" not in public.text
-    assert 'href="admin"' not in public.text
+def test_public_pages_hide_admin_and_manage_ui_but_direct_admin_path_is_protected(client):
+    store = _store("Public Movies")
+    public_pages = [
+        client.get("/"), client.get("/stores"), client.get("/help"),
+        client.get("/search"), client.get(f"/s/{store['slug']}"),
+    ]
+    for page in public_pages:
+        assert page.status_code == 200
+        lowered = page.text.lower()
+        assert "admin" not in lowered
+        assert "manage" not in lowered
+        assert "ম্যানেজ" not in page.text
+        assert "অ্যাডমিন" not in page.text
+        assert "/admin" not in lowered
+
+    # Store management is private too; only the manually entered /admin route
+    # reaches the password challenge, never a button or public navigation link.
     response = client.get("/admin", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/login"
+    private_store_list = client.get("/admin/stores", follow_redirects=False)
+    assert private_store_list.status_code == 303
+    assert private_store_list.headers["location"] == "/admin/login"
 
 
 def test_login_form_rejects_bad_password_and_sets_secure_cookie(client):

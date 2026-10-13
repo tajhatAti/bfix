@@ -205,7 +205,7 @@ CSS = """
  .store h3 { margin:0; font-size:18px; }
  .store .row:last-child { margin-top:auto; }
 
- /* Admin workspace */
+ /* Private workspace */
  .shell { min-height:100vh; display:flex; }
  aside.side { width:252px; flex:0 0 252px; position:sticky; top:0; height:100vh; overflow-y:auto;
               padding:20px 14px 18px; background:var(--sidebar); border-right:1px solid var(--line); }
@@ -370,7 +370,7 @@ def _status_pill() -> str:
     return '<a class="status" href="setup"><i></i>বট সংযোগ হচ্ছে…</a>'
 
 
-def layout(title: str, body: str, active: str = "", admin: bool = False,
+def layout(title: str, body: str, active: str = "",
            canonical_path: str | None = None) -> str:
     brand = html.escape(settings.get_str("WEB_TITLE", "Ahad OrgEx") or "Ahad OrgEx")
     site_url = (settings.get_str("SITE_URL", cfg.SITE_URL) or cfg.SITE_URL).rstrip("/")
@@ -488,7 +488,7 @@ def setup_page() -> str:
     admins = ", ".join(str(i) for i in cfg.ADMIN_IDS)
     keep = ' placeholder="খালি রাখলে আগেরটাই থাকবে"' if configured else ""
     token_ph = html.escape(credentials.masked_token()) if configured else "1234567890:AAH…"
-    back = '<p style="text-align:center"><a href="admin">← ড্যাশবোর্ডে ফিরুন</a></p>' if configured else ""
+    back = ""
     page = f"""<!doctype html><html lang="bn"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><base href="__BASEPATH__/">
 <title>সেটআপ · {brand}</title><style>{CSS}</style></head><body>
@@ -511,7 +511,7 @@ def setup_page() -> str:
       <input name="api_hash" type="password" placeholder="API Hash (৩২ অক্ষর){' — খালি = আগেরটা' if configured else ''}" autocomplete="off" spellcheck="false">
       <p class="fe" data-fe="api_hash"></p></div></div>
     <div class="step"><div class="num">৩</div><div class="box">
-      <h4>আপনার টেলিগ্রাম আইডি (অ্যাডমিন)</h4>
+      <h4>অ্যাকাউন্টের মালিকের Telegram ID</h4>
       <p class="help"><b>@userinfobot</b>-কে /start দিন, যে সংখ্যাটা দেবে সেটা লিখুন। একাধিক হলে কমা দিয়ে।</p>
       <input name="admins" inputmode="numeric" placeholder="যেমন 123456789" value="{html.escape(admins)}">
       <p class="fe" data-fe="admins"></p></div></div>
@@ -520,9 +520,9 @@ def setup_page() -> str:
   <div class="prog" id="prog"><div class="spin"></div><b id="ptxt">বট চালু হচ্ছে…</b>
     <p class="muted">টেলিগ্রামের সাথে সংযোগ হচ্ছে, সাধারণত ১০-২০ সেকেন্ড লাগে।</p></div>
   <div class="prog" id="done"><div class="tick">✓</div><h2 style="margin:0 0 6px">বট চালু হয়েছে 🎉</h2>
-    <p class="muted"><span id="who"></span> এখন অনলাইন। এবার ড্যাশবোর্ড থেকে সব করুন।</p>
+    <p class="muted"><span id="who"></span> এখন অনলাইন। সাইটে ফিরে কাজ চালিয়ে যান।</p>
     <div class="row" style="justify-content:center;margin-top:14px">
-      <a class="btn" href="admin">📊 ড্যাশবোর্ডে যান</a>
+      <a class="btn" href="/">🌐 সাইটে যান</a>
       <a class="btn grey" id="tg" style="display:none" target="_blank" rel="noopener">🤖 টেলিগ্রামে বট খুলুন</a></div></div>
   </div>
   {back}
@@ -539,7 +539,7 @@ def card(label: str, value) -> str:
 
 def store_cards(stores: list[dict]) -> str:
     if not stores:
-        return '<div class="card"><p class="muted">এখনো কোনো স্টোর নেই — অ্যাডমিন শীঘ্রই কনটেন্ট যোগ করবেন।</p></div>'
+        return '<div class="card"><p class="muted">এখনো কোনো স্টোর নেই — শীঘ্রই এখানে কনটেন্ট যোগ করা হবে।</p></div>'
     blocks = []
     for store in stores:
         stats = db.store_stats(store["id"])
@@ -643,17 +643,17 @@ def create_app() -> FastAPI:
         <div class="page-heading"><div><p class="eyebrow">DISCOVER</p><h2 id="stores">Available stores</h2></div></div>
         {store_cards(stores)}
         """
-        return layout("Home", body, "/", admin=_cookie_ok(request))
+        return layout("Home", body, "/")
 
     @app.get("/help", response_class=HTMLResponse)
     async def public_help() -> str:
         """A plain-language FAQ — the “users don't understand much” fix."""
         contact = (settings.get_str("SUPPORT_CONTACT") or "").strip()
         if contact.startswith(("http://", "https://", "tg://")):
-            contact_link = f'<a class="btn" href="{esc(contact)}">📞 অ্যাডমিনের সাথে কথা বলুন</a>'
+            contact_link = f'<a class="btn" href="{esc(contact)}">📞 সাপোর্টে যোগাযোগ করুন</a>'
         elif contact.startswith("@"):
             contact_link = (f'<a class="btn" href="https://t.me/{esc(contact[1:])}">'
-                            f'📞 অ্যাডমিনের সাথে কথা বলুন</a>')
+                            f'📞 সাপোর্টে যোগাযোগ করুন</a>')
         else:
             contact_link = ""
         bots = _bot_username()
@@ -675,15 +675,15 @@ def create_app() -> FastAPI:
 
         <details><summary>“লিমিট শেষ” লিখছে — মানে কী?</summary>
         <p>কিছু লিংকে কতবার খোলা যাবে সেটা ঠিক করা থাকে (যেমন ১০০ বার)। সেটা শেষ হলে
-        নতুন লিংক লাগবে — অ্যাডমিনের সাথে যোগাযোগ করুন, খুব দ্রুত দিয়ে দেবেন।</p></details>
+        নতুন লিংকের জন্য সাপোর্টে যোগাযোগ করুন।</p></details>
 
         <details><summary>ভিডিও ডাউনলোড করলে কি সেভ হয়ে থাকবে?</summary>
         <p>হ্যাঁ। বট থেকে পাওয়া ভিডিও আপনার টেলিগ্রাম চ্যাটেই থাকে — পরে আবার দেখতে পারবেন,
         ইন্টারনেট ছাড়াও।</p></details>
 
         <details><summary>কিছু খুঁজে পাচ্ছি না</summary>
-        <p>🔍 Search-এ নাম লিখে দেখুন, নাহলে বটে 🆘 Help বা “অ্যাডমিনের সাথে কথা বলুন”
-        বাটনে চাপ দিন — সরাসরি মেসেজ চলে যাবে।</p></details>
+        <p>🔍 Search-এ নাম লিখে দেখুন, নাহলে বটে 🆘 Help বা সাপোর্ট বাটনে চাপ দিন —
+        সরাসরি মেসেজ চলে যাবে।</p></details>
         """
         body = f"""
         <h2>❓ কীভাবে ব্যবহার করবেন</h2>
@@ -789,7 +789,7 @@ def create_app() -> FastAPI:
             <button type=submit>Continue</button>
           </form>
         </div>"""
-        return layout("Sign in", body, "", admin=False)
+        return layout("Sign in", body)
 
     @app.post("/admin/login")
     async def login(request: Request, password: str = Form("")):
@@ -1449,7 +1449,7 @@ def create_app() -> FastAPI:
                 f"<td>{money(sales['revenue'], settings.get_str('CURRENCY', '৳'))}</td>"
                 f"<td>{len(db.plans(store['id'], only_active=True))}</td><td>{drip_txt}</td>"
                 f"<td>{'✅ ' + esc(store.get('publish_channel_title') or 'linked') if store.get('publish_channel_id') else '—'}</td>"
-                f"<td><a class='btn' href='/admin/stores/{store['id']}'>Manage</a> "
+                f"<td><a class='btn' href='/admin/stores/{store['id']}'>Open</a> "
                 f"<a class='btn grey' href='/admin/analytics/store/{store['id']}'>Stats</a> "
                 f"<a class='btn grey' href='/s/{esc(store['slug'] or store['id'])}'>Public page</a></td></tr>")
         note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
