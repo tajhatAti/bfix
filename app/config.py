@@ -167,7 +167,8 @@ WEB_USER = get_str("WEB_USER", "admin")
 WEB_PASS = get_str("WEB_PASS")
 WEB_SECRET = get_str("WEB_SECRET", "")
 WEB_SESSION_HOURS = get_int("WEB_SESSION_HOURS", 72)
-WEB_TITLE = get_str("WEB_TITLE", "Store")
+WEB_TITLE = get_str("WEB_TITLE", "Ahad OrgEx")
+SITE_URL = get_str("SITE_URL", "https://ahadorgex.onrender.com")
 #: True when a hosting panel gave us a port to listen on (CodeNest/RunSpace,
 #: Render, Railway…). The website must then start even if WEB_ENABLED was
 #: switched off, otherwise the panel shows “no web listener”.

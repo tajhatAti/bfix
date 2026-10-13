@@ -384,8 +384,10 @@ def store_forcejoin_body(store: dict) -> str:
         f"<td>{'✅' if ch.get('chat_id') else '⏳'}</td>"
         f"<td><a class='btn bad' href='/admin/channels/delete/{ch['id']}'>🗑</a></td></tr>"
         for ch in db.join_channels(store["id"]))
-    return f"""<h4>📢 এই স্টোরের জন্য আলাদা চ্যানেল</h4>
+    return f"""<h4>📢 ইউজারের জন্য বাধ্যতামূলক চ্যানেল</h4>
     <div class="card">
+      <p class="muted">এই চ্যানেলটি শুধু ভিডিও পাওয়ার আগে join gate হিসেবে কাজ করে।
+      ভিডিও প্রকাশের চ্যানেল আলাদা করে নিচে সেট করা যায়।</p>
       <form method=post action="/admin/stores/{store['id']}/forcejoin">
         <label>বাধ্যতামূলক চ্যানেল (খালি = বন্ধ)</label>
         <input name=ref value="{esc(store.get('forcejoin') or '')}"
@@ -393,7 +395,52 @@ def store_forcejoin_body(store: dict) -> str:
         <button class="ok">💾 সেভ</button>
       </form>
       <table><tr><th>চ্যানেল</th><th>রেফারেন্স</th><th>ID</th><th></th></tr>
-      {rows or "<tr><td colspan=4 class='muted'>এই স্টোরে আলাদা কোনো চ্যানেল নেই — ডিফল্ট চ্যানেল প্রযোজ্য</td></tr>"}</table>
+      {rows or "<tr><td colspan=4 class='muted'>এই স্টোরে আলাদা কোনো join channel নেই — ডিফল্ট চ্যানেল প্রযোজ্য</td></tr>"}</table>
+    </div>"""
+
+
+def store_publish_channel_body(store: dict) -> str:
+    """Per-store publishing channel created by the connected Telegram session."""
+    store_id = int(store["id"])
+    channel_id = store.get("publish_channel_id")
+    if not channel_id:
+        return f"""<h4>📡 Telegram channel · ভিডিও প্রকাশ</h4>
+        <div class="card">
+          <p class="muted">স্টোর তৈরি হলে নিজের Telegram session দিয়ে একটি private channel
+          তৈরি হবে। Bot-কে admin করা গেলে নতুন ভিডিওগুলো সেখানে auto-post হবে।</p>
+          <form method=post action="/admin/stores/{store_id}/channel/create">
+            <label>চ্যানেলের নাম</label>
+            <input name=title maxlength=128 value="{esc(store['name'])}" required>
+            <button class="ok">＋ Telegram channel তৈরি করুন</button>
+          </form>
+          <p class="muted">প্রথমে <a href="/admin/session">Telegram session</a> connect করুন।</p>
+        </div>"""
+
+    link = store.get("publish_channel_link") or ""
+    link_html = (f'<a class="btn grey" href="{esc(link)}" target="_blank" rel="noopener">'
+                 "↗ চ্যানেল খুলুন</a>" if link else "")
+    auto_post = bool(store.get("auto_post_enabled"))
+    status = "চালু — নতুন upload চ্যানেলে যাবে" if auto_post else "বন্ধ"
+    latest = db.files_of(store_id, newest_first=True)
+    latest_button = (
+        f'<form method=post action="/admin/stores/{store_id}/channel/post-latest">'
+        '<button class="btn" type="submit">▶ সর্বশেষ ভিডিও পোস্ট করুন</button></form>'
+        if latest else '<span class="muted">পোস্ট করার মতো ভিডিও এখনো নেই।</span>')
+    return f"""<h4>📡 Telegram channel · ভিডিও প্রকাশ</h4>
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div><b>{esc(store.get('publish_channel_title') or store['name'])}</b>
+          <div class="muted">ID {esc(str(channel_id))} · অটো-পোস্ট: {status}</div></div>
+        {link_html}
+      </div>
+      <form method=post action="/admin/stores/{store_id}/channel/autopost" class="row">
+        <label class="chk"><input type=checkbox name=enabled value=1{' checked' if auto_post else ''}>
+          নতুন ভিডিও upload হলে এই চ্যানেলে পোস্ট করুন</label>
+        <button class="ok" type="submit">💾 সংরক্ষণ</button>
+      </form>
+      <div class="row">{latest_button}</div>
+      <p class="muted">এটি join gate নয়। Channel তৈরি ও পরিচালনায় আপনার session লাগে;
+      post-এর জন্য bot-কে channel admin করা হয়।</p>
     </div>"""
 
 
@@ -421,8 +468,12 @@ def store_admin_body(store: dict, flash: str = "", warn: str = "") -> str:
         f"<td>{esc(g.get('source') or '')}</td></tr>" for g in grants[:100])
     note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
     warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
+    broadcast_button = (
+        f'<a class="btn" href="/admin/files/broadcast/{files[0]["id"]}">📢 ব্রডকাস্ট</a>'
+        if files else "")
     return f"""{note}{warnbox}
-    <h3>🏪 {esc(store['name'])} <span class="muted">#{store['id']}</span></h3>
+    <div class="page-heading"><div><p class="eyebrow">STORE WORKSPACE</p>
+      <h2>{esc(store['name'])}</h2></div><span class="pill">#{store['id']}</span></div>
     <div class="grid">
       {_card("ফাইল", stats['files'])}{_card("ভিউ", stats['views'])}
       {_card("ক্যাশড", sum(1 for f in files if f.get('mirror_msg')))}
@@ -435,9 +486,21 @@ def store_admin_body(store: dict, flash: str = "", warn: str = "") -> str:
       <a class="btn grey" href="/s/{esc(store['slug'] or store['id'])}">🌐 সাইটে দেখুন</a>
       <a class="btn grey" href="/admin/files?store={store['id']}">🗂 ফাইল</a>
       <a class="btn grey" href="/admin/analytics/store/{store['id']}">📊 অ্যানালিটিক্স</a>
-      <a class="btn" href="/admin/files/broadcast/{(files[0]['id'] if files else 0)}">📢 ব্রডকাস্ট</a>
+      {broadcast_button}
       <a class="btn" href="/admin/channels/compose?store={store['id']}">📡 চ্যানেলে পোস্ট</a>
     </p>
+    <h4>✏️ স্টোরের তথ্য</h4>
+    <div class="card">
+      <form method=post action="/admin/stores/{store['id']}/edit">
+        <label>নাম</label><input name=name value="{esc(store['name'])}" maxlength=100 required>
+        <label>বর্ণনা</label><textarea name=description rows=3>{esc(store.get('description') or '')}</textarea>
+        <label>স্টোরের ধরন</label>
+        <select name=is_premium><option value="0"{' selected' if not store.get('is_premium') else ''}>Free — সবার জন্য</option>
+          <option value="1"{' selected' if store.get('is_premium') else ''}>Premium — access লাগবে</option></select>
+        <button class="ok" type=submit>💾 তথ্য সংরক্ষণ</button>
+      </form>
+    </div>
+    {store_publish_channel_body(store)}
     {store_forcejoin_body(store)}
     <h4>💎 প্ল্যান ({len(plans)}) · 📅 ড্রিপ
       ({'চালু ' + str(drip['count']) + '/দিন ' + drip['send_time'] if drip and drip['enabled'] else 'বন্ধ'})</h4>
@@ -491,7 +554,9 @@ async def self_test() -> list[dict]:
         f"{len(slugged)}/{len(stores)} স্টোরের slug ঠিক আছে"
         + ("" if runtime.bot_username else " · বট ইউজারনেম এখনো পাওয়া যায়নি"))
     add("টেলিগ্রামের চাপ", not bool(flood_status()), flood_status() or "স্বাভাবিক")
-    add("ওয়েব লগইন", bool(cfg.WEB_PASS), "WEB_PASS সেট আছে" if cfg.WEB_PASS else "পাসওয়ার্ড নেই (হোস্টে সেট করুন)")
+    add("ওয়েব লগইন", True,
+        "WEB_PASS সেট আছে" if cfg.WEB_PASS else
+        "Temporary password server log-এ তৈরি হয় — stable login-এর জন্য WEB_PASS সেট করুন")
     return checks
 
 

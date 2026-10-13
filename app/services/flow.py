@@ -120,7 +120,8 @@ async def open_file(event, file_id: int, *, token: str = "", ref: str = "",
         await show_join_gate(event, user_id, file_row, gate["missing"], token, chat_id=chat)
         return GATE_JOIN
 
-    result = await deliver(chat, file_row, caption, buttons=buttons)
+    result = (await deliver(chat, file_row, caption, buttons=buttons) if buttons is not None
+              else await deliver(chat, file_row, caption))
     if result.ok:
         log("deliver", user_id, store["id"], file_row["id"], ref or token)
         return GATE_OK

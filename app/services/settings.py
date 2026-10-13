@@ -222,7 +222,9 @@ REGISTRY: list[Group] = [
         key="site", label="ওয়েবসাইট", icon="🌐",
         blurb="পাবলিক সাইটের নাম, ট্যাগলাইন ও টাইমজোন।",
         settings=[
-            _s("WEB_TITLE", "সাইটের নাম", "site", default="Store"),
+            _s("WEB_TITLE", "সাইটের নাম", "site", default="Ahad OrgEx"),
+            _s("SITE_URL", "সাইটের পাবলিক URL", "site",
+               default="https://ahadorgex.onrender.com", placeholder="https://example.com"),
             _s("SITE_TAGLINE", "সাইটের ট্যাগলাইন", "site", kind="long"),
             _s("SITE_CONTACT", "সাইটে দেখানোর যোগাযোগ", "site"),
             _s("TZ_OFFSET", "টাইমজোন (UTC থেকে ঘণ্টা)", "site", kind="float",

@@ -13,6 +13,7 @@ The panel (website *and* bot) can:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 from app import runtime
@@ -103,6 +104,148 @@ async def add_channel(ref: str, store_id: int | None = None, title: str = "") ->
     return {"ok": bool(chat_id), "id": channel_id, "chat_id": chat_id,
             "title": name or cleaned, "error": "" if chat_id else
             (resolved.get("error") or "চ্যানেল পাওয়া যায়নি")}
+
+
+async def create_store_channel(store_id: int, title: str = "") -> dict:
+    """Create a private publishing channel for one store with the owner's session.
+
+    The bot is promoted as a channel admin so the existing delivery/autopost
+    pipeline can publish from the bot account. This channel is intentionally
+    stored on the store record—not in ``join_channels``—so creating a publishing
+    destination never unexpectedly turns it into a force-join gate.
+    """
+    from app import config as cfg
+    from telethon import functions, utils
+
+    store = db.store(int(store_id))
+    if store is None:
+        return {"ok": False, "error": "স্টোর পাওয়া যায়নি"}
+    if store.get("publish_channel_id"):
+        return {
+            "ok": True,
+            "already": True,
+            "channel_id": store["publish_channel_id"],
+            "title": store.get("publish_channel_title") or store["name"],
+            "link": store.get("publish_channel_link") or "",
+            "auto_post": bool(store.get("auto_post_enabled")),
+        }
+
+    preferred_admin = int(store.get("admin_id") or (cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0))
+    client = runtime.user_clients.get(preferred_admin)
+    if client is None:
+        client = next(iter(runtime.user_clients.values()), None)
+    if client is None:
+        return {"ok": False, "error": "আগে Telegram session যুক্ত করুন"}
+
+    try:
+        if not client.is_connected():
+            await client.connect()
+        if not await client.is_user_authorized():
+            return {"ok": False, "error": "Telegram session আর অনুমোদিত নেই—আবার যুক্ত করুন"}
+
+        channel_title = (title or store["name"]).strip()[:128]
+        if not channel_title:
+            channel_title = f"Store {store_id}"
+        result = await client(functions.channels.CreateChannelRequest(
+            title=channel_title,
+            about=f"Updates and videos for {store['name']}. Managed from the store dashboard.",
+            broadcast=True,
+            megagroup=False,
+        ))
+        entity = result.chats[0]
+        peer_id = int(utils.get_peer_id(entity))
+        actual_title = getattr(entity, "title", "") or channel_title
+
+        bot_admin = False
+        warning = ""
+        bot_username = runtime.bot_username or db.get_meta("bot_username", "")
+        if bot_username:
+            try:
+                await client.edit_admin(
+                    entity, bot_username, is_admin=True,
+                    post_messages=True, edit_messages=True,
+                    delete_messages=True, title="store manager",
+                )
+                bot_admin = True
+                # A first update lets an online bot cache this private peer.
+                if runtime.bot_online():
+                    probe = await client.send_message(entity, "·", silent=True)
+                    await asyncio.sleep(1)
+                    await client.delete_messages(entity, [probe.id])
+            except Exception as exc:
+                warning = f"চ্যানেল তৈরি হয়েছে, তবে bot admin করা যায়নি: {str(exc)[:120]}"
+        else:
+            warning = "চ্যানেল তৈরি হয়েছে; bot username পাওয়া গেলে bot admin করে auto-post চালু করুন।"
+
+        invite = ""
+        try:
+            exported = await client(functions.messages.ExportChatInviteRequest(entity))
+            invite = getattr(exported, "link", "") or ""
+        except Exception as exc:
+            log.debug("could not export invite for store channel %s: %s", store_id, exc)
+
+        db.update_store(
+            store_id,
+            publish_channel_id=peer_id,
+            publish_channel_title=actual_title,
+            publish_channel_link=invite,
+            auto_post_enabled=1 if bot_admin else 0,
+        )
+        db.add_bot_chat(peer_id, actual_title)
+        db.log_event("store_channel_created", None, store_id, None, str(peer_id), actual_title)
+        return {
+            "ok": True,
+            "channel_id": peer_id,
+            "title": actual_title,
+            "link": invite,
+            "auto_post": bot_admin,
+            "bot_admin": bot_admin,
+            "warning": warning,
+        }
+    except Exception as exc:
+        log.warning("could not create a publishing channel for store %s: %s", store_id, exc)
+        return {"ok": False, "error": str(exc)[:180] or "চ্যানেল তৈরি করা যায়নি"}
+
+
+async def enable_store_channel(store_id: int) -> dict:
+    """Promote the bot to a store's publishing channel and enable its auto-posts."""
+    from app import config as cfg
+
+    store = db.store(int(store_id))
+    if store is None or not store.get("publish_channel_id"):
+        return {"ok": False, "error": "এই store-এর publish channel সেট করা নেই"}
+    preferred_admin = int(store.get("admin_id") or (cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0))
+    client = runtime.user_clients.get(preferred_admin)
+    if client is None:
+        client = next(iter(runtime.user_clients.values()), None)
+    if client is None:
+        return {"ok": False, "error": "আগে Telegram session যুক্ত করুন"}
+    if not runtime.bot_username:
+        return {"ok": False, "error": "Bot এখনো online হয়নি—পরে আবার চেষ্টা করুন"}
+    try:
+        if not client.is_connected():
+            await client.connect()
+        if not await client.is_user_authorized():
+            return {"ok": False, "error": "Telegram session আর অনুমোদিত নেই—আবার যুক্ত করুন"}
+        try:
+            entity = await client.get_entity(int(store["publish_channel_id"]))
+        except Exception:
+            await client.get_dialogs()
+            entity = await client.get_entity(int(store["publish_channel_id"]))
+        await client.edit_admin(
+            entity, runtime.bot_username, is_admin=True,
+            post_messages=True, edit_messages=True,
+            delete_messages=True, title="store manager",
+        )
+        if runtime.bot_online():
+            probe = await client.send_message(entity, "·", silent=True)
+            await asyncio.sleep(1)
+            await client.delete_messages(entity, [probe.id])
+        db.update_store(store_id, auto_post_enabled=1)
+        return {"ok": True, "title": store.get("publish_channel_title") or store["name"]}
+    except Exception as exc:
+        log.warning("could not enable store channel %s: %s", store_id, exc)
+        return {"ok": False, "error": str(exc)[:180] or "Bot-কে admin করা যায়নি"}
 
 
 async def publish(target: str | int, *, text: str = "", file_ids: list[int] | None = None,
@@ -238,14 +381,17 @@ async def auto_post_new_file(file_id: int, store_id: int | None = None) -> dict:
     from app import runtime
     from app.services import settings
 
-    if not settings.get_bool("AUTO_POST_ENABLED", False):
-        return {"ok": False, "error": "off"}
     file_row = db.file(file_id)
     if file_row is None:
         return {"ok": False, "error": "file missing"}
     store_id = store_id or file_row["store_id"]
-    store = db.store(store_id)
-    target = (settings.get_str("AUTO_POST_CHANNEL") or "").strip()
+    store = db.store(store_id) if store_id else None
+    store_target = (store or {}).get("publish_channel_id")
+    store_autopost = bool((store or {}).get("auto_post_enabled")) and bool(store_target)
+    global_autopost = settings.get_bool("AUTO_POST_ENABLED", False)
+    if not store_autopost and not global_autopost:
+        return {"ok": False, "error": "off"}
+    target = store_target if store_autopost else (settings.get_str("AUTO_POST_CHANNEL") or "").strip()
     if not target:
         rows = db.join_channels()
         if not rows:

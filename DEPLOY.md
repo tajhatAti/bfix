@@ -77,8 +77,9 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 | `API_ID`, `API_HASH` | my.telegram.org থেকে |
 | `BOT_TOKEN` | BotFather থেকে (নতুন রিভোক করা) |
 | `ADMIN_IDS` | আপনার টেলিগ্রাম numeric ID (একাধিক হলে কমা দিয়ে) |
-| `WEB_USER`, `WEB_PASS` | অ্যাডমিন প্যানেলের লগইন — **শক্ত পাসওয়ার্ড দিন** |
+| `WEB_USER`, `WEB_PASS` | অ্যাডমিন প্যানেলের লগইন — **শক্ত পাসওয়ার্ড দিন**; না দিলে temporary password startup log-এ আসে |
 | `WEB_SECRET` | লগইন কুকি সাইন করার গোপন কী (র‍্যান্ডম লম্বা স্ট্রিং) |
+| `WEB_TITLE`, `SITE_URL` | ব্র্যান্ড ও public domain (`Ahad OrgEx`, `https://ahadorgex.onrender.com`) |
 
 **আর কিছু লাগবে না।** চ্যানেল জয়েন (প্রাইভেট লিংক সহ), পেমেন্ট নাম্বার, সাপোর্ট
 কন্টাক্ট, ক্যাপশন, ব্রডকাস্ট গতি, সাইটের নাম — সব **ওয়েবসাইটের `/admin/settings`**

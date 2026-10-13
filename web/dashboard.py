@@ -56,6 +56,9 @@ from web import panels                                                        # 
 
 STARTED_AT = time.time()
 COOKIE_NAME = "sb_session"
+# Temporary phone/code login state. String sessions are persisted only after Telegram
+# confirms authorization; pending codes are never written to the database or logs.
+PENDING_SESSIONS: dict[int, dict] = {}
 
 # --------------------------------------------------------------------- helpers
 def _bot_username() -> str:
@@ -82,9 +85,13 @@ def _session_token() -> str:
     return hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
 
+def _secure_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest((left or "").encode("utf-8"), (right or "").encode("utf-8"))
+
+
 def _cookie_ok(request: Request) -> bool:
     cookie = request.cookies.get(COOKIE_NAME, "")
-    return bool(cookie) and hmac.compare_digest(cookie, _session_token())
+    return bool(cookie) and _secure_equal(cookie, _session_token())
 
 
 def _basic_ok(request: Request) -> bool:
@@ -97,13 +104,13 @@ def _basic_ok(request: Request) -> bool:
         user, _, password = decoded.partition(":")
     except Exception:
         return False
-    return (hmac.compare_digest(user, cfg.WEB_USER)
-            and hmac.compare_digest(password, _panel_password()))
+    return (_secure_equal(user, cfg.WEB_USER)
+            and _secure_equal(password, _panel_password()))
 
 
 def _authed(request: Request) -> bool:
-    """The panel is open — no username/password (owner's choice)."""
-    return True
+    """Admin-only pages require a signed cookie or valid HTTP Basic credentials."""
+    return _cookie_ok(request) or _basic_ok(request)
 
 
 def deep_link(payload: str) -> str:
@@ -119,152 +126,208 @@ def _start(ts: float | None, pattern: str = "%d %b %H:%M") -> str:
 
 # ---------------------------------------------------------------------- layout
 CSS = """
- :root { color-scheme: dark;
-   --bg:#080b12; --bg2:#0d121c; --card:#111827; --card2:#161e2e; --line:#1f2a3d; --line2:#2a3750;
-   --txt:#eef2f9; --mut:#94a3b8; --acc:#7c83ff; --acc2:#6366f1; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444;
-   --r:14px; --shadow:0 10px 30px rgba(0,0,0,.35); }
- * { box-sizing: border-box; }
+ :root {
+   color-scheme: light;
+   --bg:#f4f7fb; --surface:#ffffff; --surface-2:#f8fafc; --sidebar:#fff;
+   --ink:#172033; --muted:#64748b; --line:#e4eaf2; --line-strong:#d3dce8;
+   --accent:#245bd6; --accent-dark:#1747b0; --accent-soft:#edf4ff;
+   --teal:#0f766e; --ok:#13795b; --ok-soft:#e7f7f0;
+   --warn:#a75d0a; --warn-soft:#fff6e8; --bad:#c2413a; --bad-soft:#fff0ee;
+   --r:16px; --shadow:0 8px 24px rgba(23,32,51,.055); --shadow-lg:0 18px 48px rgba(23,32,51,.12);
+ }
+ * { box-sizing:border-box; }
  html { scroll-behavior:smooth; }
- body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Bengali", "Hind Siliguri", sans-serif;
-        margin:0; color:var(--txt); line-height:1.55; font-size:15px;
-        background: radial-gradient(900px 420px at 80% -10%, rgba(99,102,241,.16), transparent 60%),
-                    radial-gradient(700px 360px at -10% 0%, rgba(34,197,94,.08), transparent 55%), var(--bg); }
- a { color:#a5b4fc; }
- h2,h3 { letter-spacing:-.01em; }
- h2 { font-size:24px; margin:4px 0 14px; } h3 { font-size:17px; margin:22px 0 8px; }
+ body { margin:0; color:var(--ink); background:var(--bg); line-height:1.6; font-size:15px;
+        font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans Bengali","Hind Siliguri",sans-serif; }
+ a { color:var(--accent); text-decoration:none; }
+ a:hover { color:var(--accent-dark); }
+ h1,h2,h3,h4 { color:var(--ink); letter-spacing:-.02em; line-height:1.3; }
+ h2 { font-size:clamp(24px,3vw,32px); margin:0 0 14px; }
+ h3 { font-size:19px; margin:26px 0 10px; }
+ h4 { font-size:16px; margin:22px 0 10px; }
+ p { margin:8px 0 14px; }
+ code { color:#31415b; background:#f1f5f9; border:1px solid var(--line); padding:2px 6px; border-radius:6px; font-size:.9em; }
 
- /* ---------- public header ---------- */
- header { position:sticky; top:0; z-index:20; backdrop-filter: blur(14px); background:rgba(8,11,18,.78);
-          padding:12px 22px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;
-          border-bottom:1px solid var(--line); }
- header h1 { font-size:18px; margin:0; display:flex; align-items:center; gap:10px; font-weight:800; }
- .logo { width:34px; height:34px; border-radius:10px; display:grid; place-items:center; font-size:18px;
-         background:linear-gradient(135deg,#6366f1,#22c55e); box-shadow:0 6px 18px rgba(99,102,241,.45); }
- nav.top a { color:var(--mut); text-decoration:none; margin-right:6px; font-size:14px; padding:7px 12px; border-radius:9px; }
- nav.top a.on, nav.top a:hover { color:var(--txt); background:var(--card2); }
- main { padding:22px; max-width:1180px; margin:0 auto; }
+ /* Public site */
+ header { position:sticky; top:0; z-index:20; min-height:68px; padding:12px clamp(16px,4vw,48px);
+          display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+          background:rgba(255,255,255,.94); backdrop-filter:blur(16px); border-bottom:1px solid var(--line); }
+ header h1 { margin:0; display:flex; align-items:center; gap:10px; font-size:17px; font-weight:800; }
+ .logo { width:36px; height:36px; display:inline-grid; place-items:center; flex:0 0 auto; border-radius:11px;
+         color:#fff; font-size:18px; background:linear-gradient(145deg,#245bd6,#0f766e); box-shadow:0 5px 12px rgba(36,91,214,.18); }
+ nav.top { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+ nav.top a { color:var(--muted); padding:8px 12px; border-radius:9px; font-size:14px; }
+ nav.top a.on, nav.top a:hover { color:var(--ink); background:var(--surface-2); }
+ main { width:min(1180px,100%); margin:0 auto; padding:26px 24px 48px; }
+ .hero { position:relative; overflow:hidden; padding:clamp(28px,5vw,56px); margin:8px 0 24px;
+         border:1px solid #dbe8fa; border-radius:24px; background:linear-gradient(120deg,#fff 4%,#f1f6ff 62%,#edf8f6); }
+ .hero:after { content:""; position:absolute; width:250px; height:250px; right:-82px; top:-110px; border-radius:50%;
+               border:36px solid rgba(36,91,214,.055); pointer-events:none; }
+ .hero h2 { max-width:760px; font-size:clamp(32px,5vw,52px); line-height:1.12; margin:0 0 14px; color:#172b4d; letter-spacing:-.045em; }
+ .hero p { max-width:680px; color:#52637c; font-size:17px; }
+ .hero .row { margin-top:22px; }
+ footer { color:var(--muted); font-size:13px; text-align:center; padding:30px 16px; }
+ .howto { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:14px 16px; margin:24px 0;
+          color:#42536c; border:1px solid var(--line); border-radius:14px; background:var(--surface); }
+ .howto b { color:var(--ink); margin-right:8px; }
+ .howto span { background:#f5f8fc; border:1px solid var(--line); padding:5px 10px; border-radius:999px; font-size:13px; }
+ .stores { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,270px),1fr)); gap:16px; margin-top:16px; }
+ .store { min-height:204px; display:flex; flex-direction:column; gap:12px; padding:20px;
+          background:var(--surface); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow);
+          transition:transform .18s,border-color .18s,box-shadow .18s; }
+ .store:hover { transform:translateY(-2px); border-color:#c3d5f5; box-shadow:0 14px 30px rgba(23,32,51,.09); }
+ .store h3 { margin:0; font-size:18px; }
+ .store .row:last-child { margin-top:auto; }
 
- /* ---------- admin shell ---------- */
- .shell { display:flex; min-height:100vh; }
- aside.side { width:248px; flex:0 0 248px; background:rgba(13,18,28,.92); border-right:1px solid var(--line);
-              padding:18px 14px; position:sticky; top:0; height:100vh; overflow:auto; }
- aside.side .brand { display:flex; align-items:center; gap:10px; font-weight:800; font-size:16px; margin:2px 6px 18px; }
- aside.side .grp { color:#64748b; font-size:11px; letter-spacing:.09em; text-transform:uppercase; margin:16px 10px 6px; }
- aside.side a { display:flex; align-items:center; gap:10px; color:#b6c2d6; text-decoration:none; padding:9px 11px;
-                border-radius:10px; font-size:14.5px; margin:2px 0; }
- aside.side a:hover { background:var(--card2); color:#fff; }
- aside.side a.on { background:linear-gradient(135deg,rgba(99,102,241,.28),rgba(99,102,241,.10)); color:#fff;
-                   box-shadow: inset 0 0 0 1px rgba(124,131,255,.35); }
- aside.side a .ic { width:22px; text-align:center; }
+ /* Admin workspace */
+ .shell { min-height:100vh; display:flex; }
+ aside.side { width:252px; flex:0 0 252px; position:sticky; top:0; height:100vh; overflow-y:auto;
+              padding:20px 14px 18px; background:var(--sidebar); border-right:1px solid var(--line); }
+ aside.side .brand { display:flex; align-items:center; gap:11px; margin:0 8px 26px; font-size:16px; font-weight:800; }
+ aside.side .brand .logo { width:38px; height:38px; border-radius:12px; }
+ aside.side .grp { margin:20px 10px 7px; color:#8793a5; font-size:10px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+ aside.side a { display:flex; align-items:center; gap:11px; margin:2px 0; padding:9px 11px; color:#4a5870;
+                font-size:14px; border-radius:10px; transition:background .15s,color .15s; }
+ aside.side a:hover { color:var(--ink); background:#f5f7fb; }
+ aside.side a.on { color:#1747b0; background:var(--accent-soft); font-weight:700; }
+ aside.side a .ic { width:22px; text-align:center; font-size:16px; }
  .content { flex:1; min-width:0; }
- .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 24px;
-           border-bottom:1px solid var(--line); background:rgba(8,11,18,.7); backdrop-filter:blur(12px);
-           position:sticky; top:0; z-index:15; }
- .topbar h1 { margin:0; font-size:19px; font-weight:800; }
- .burger { display:none; background:var(--card2); border:1px solid var(--line2); padding:8px 11px; }
- .status { display:inline-flex; align-items:center; gap:8px; font-size:13px; padding:6px 12px; border-radius:999px;
-           background:var(--card2); border:1px solid var(--line2); color:var(--mut); text-decoration:none; }
- .status i { width:9px; height:9px; border-radius:50%; background:var(--warn); box-shadow:0 0 0 4px rgba(245,158,11,.18); }
- .status.on i { background:var(--ok); box-shadow:0 0 0 4px rgba(34,197,94,.18); }
- .status.err i { background:var(--bad); box-shadow:0 0 0 4px rgba(239,68,68,.18); }
- .content main { padding:24px; max-width:1240px; }
+ .topbar { position:sticky; top:0; z-index:15; min-height:66px; display:flex; align-items:center; justify-content:space-between;
+           gap:14px; padding:12px clamp(16px,3vw,32px); background:rgba(255,255,255,.94); backdrop-filter:blur(14px);
+           border-bottom:1px solid var(--line); }
+ .topbar h1 { font-size:17px; margin:0; font-weight:750; }
+ .topbar .row { gap:10px; }
+ .content main { width:min(1360px,100%); padding:28px clamp(16px,3vw,36px) 48px; }
+ .burger { display:none; padding:8px 10px; color:var(--ink); background:#fff; border:1px solid var(--line-strong); box-shadow:none; }
+ .status { display:inline-flex; align-items:center; gap:8px; padding:6px 11px; color:#56647a; background:#fff;
+           border:1px solid var(--line); border-radius:999px; font-size:12px; white-space:nowrap; }
+ .status i { width:8px; height:8px; border-radius:50%; background:#d79533; }
+ .status.on i { background:#15976b; box-shadow:0 0 0 3px #e5f6ee; }
+ .status.err i { background:#cf4c44; box-shadow:0 0 0 3px #fff0ee; }
+ .page-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 0 20px; }
+ .page-heading h2 { margin:0; }
+ .eyebrow { color:#7b8aa0; font-size:10px; font-weight:800; letter-spacing:.15em; margin:0 0 7px; }
 
- /* ---------- components ---------- */
- .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; }
- .card { background:linear-gradient(180deg,var(--card),#0f1522); border:1px solid var(--line); border-radius:var(--r);
-         padding:18px; box-shadow:var(--shadow); }
- .card .l { color:var(--mut); font-size:13px; } .card .n { font-size:28px; font-weight:800; margin-top:4px; letter-spacing:-.02em; }
- table { width:100%; border-collapse:separate; border-spacing:0; margin-top:10px; font-size:14px;
-         background:var(--card); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; }
- th,td { text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
+ /* Components and data */
+ .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; }
+ .card { padding:18px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow); }
+ .card .l { color:var(--muted); font-size:12px; font-weight:600; }
+ .card .n { color:#1e3557; font-size:27px; font-weight:800; margin-top:4px; letter-spacing:-.03em; overflow-wrap:anywhere; }
+ table { width:100%; margin-top:12px; border-collapse:separate; border-spacing:0; overflow:hidden; font-size:13.5px;
+         background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); }
+ th,td { text-align:left; vertical-align:top; padding:12px 14px; border-bottom:1px solid #edf0f5; }
+ th { color:#718096; background:#f8fafc; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.075em; }
  tr:last-child td { border-bottom:0; }
- tbody tr:hover td { background:rgba(124,131,255,.05); }
- th { color:var(--mut); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; background:#0f1522; }
- a.btn, button { background:linear-gradient(135deg,#6366f1,#4f46e5); color:#fff; border:0; padding:10px 16px; border-radius:11px;
-                 text-decoration:none; font:inherit; font-size:14px; font-weight:600; cursor:pointer; display:inline-block;
-                 box-shadow:0 6px 16px rgba(79,70,229,.35); transition:transform .12s, filter .12s; }
- a.btn:hover, button:hover { filter:brightness(1.1); transform:translateY(-1px); }
- a.ok, button.ok { background:linear-gradient(135deg,#16a34a,#059669); box-shadow:0 6px 16px rgba(5,150,105,.3); }
- a.bad, button.bad { background:linear-gradient(135deg,#dc2626,#b91c1c); box-shadow:0 6px 16px rgba(185,28,28,.3); }
- a.grey, button.grey { background:#273246; box-shadow:none; }
- a.warn, button.warn { background:linear-gradient(135deg,#d97706,#b45309); box-shadow:none; }
- input, textarea, select { background:#0a101b; color:var(--txt); border:1px solid var(--line2); border-radius:11px;
-                 padding:11px 13px; width:100%; margin:6px 0; font:inherit; transition:border-color .15s, box-shadow .15s; }
- input:focus, textarea:focus, select:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 4px rgba(124,131,255,.18); }
- label { font-size:13px; color:var(--mut); font-weight:600; }
- .muted { color:var(--mut); font-size:13px; }
- .chk { display:flex; align-items:center; gap:8px; color:var(--txt); font-size:14px; margin:8px 0; }
- .chk input { width:auto; margin:0; }
- .pill { background:#1b2538; border:1px solid var(--line2); padding:2px 10px; border-radius:999px; font-size:12px; }
- .flash { background:rgba(34,197,94,.12); border:1px solid rgba(34,197,94,.4); padding:12px 16px; border-radius:12px; margin-bottom:16px; }
- .warnbox { background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.4); padding:12px 16px; border-radius:12px; margin-bottom:16px; }
- .hero { padding:46px 0 26px; }
- .hero h2 { font-size:40px; margin:0 0 12px; line-height:1.15; letter-spacing:-.03em;
-            background:linear-gradient(135deg,#fff,#a5b4fc 60%,#86efac); -webkit-background-clip:text; background-clip:text; color:transparent; }
- .hero p { color:var(--mut); font-size:17px; max-width:640px; }
- .stores { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:16px; margin-top:18px; }
- .store { background:linear-gradient(180deg,var(--card),#0f1522); border:1px solid var(--line); border-radius:18px; padding:18px;
-          display:flex; flex-direction:column; gap:9px; transition:transform .15s, border-color .15s; }
- .store:hover { transform:translateY(-3px); border-color:rgba(124,131,255,.5); }
- .store h3 { margin:0; font-size:17px; }
- .row { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
- .bar { background:#0a101b; border-radius:999px; height:12px; overflow:hidden; border:1px solid var(--line); }
- .bar > i { display:block; height:100%; background:linear-gradient(90deg,#22c55e,#6366f1); }
- footer { color:var(--mut); font-size:13px; text-align:center; padding:30px 16px; }
- .logline { white-space:pre-wrap; word-break:break-word; border-bottom:1px solid #182134; padding:4px 2px; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
- .logline:first-child { color:var(--txt); }
- .howto { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:16px 18px;
-          margin:18px 0; display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:14px; }
- .howto b { color:#86efac; }
- .howto span { background:#1b2538; border-radius:999px; padding:5px 13px; }
- ol.steps { padding-left:22px; } ol.steps li { margin:8px 0; }
- details { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 16px; margin:10px 0; }
- details summary { cursor:pointer; font-weight:600; }
- details p { color:var(--mut); margin:10px 0 2px; }
- .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; font-size:14px; }
- .kv div:nth-child(odd) { color:var(--mut); }
- code { background:#0a101b; border:1px solid var(--line); padding:1px 6px; border-radius:6px; font-size:.9em; }
+ tbody tr:hover td { background:#fbfdff; }
+ .row { display:flex; flex-wrap:wrap; align-items:center; gap:9px; }
+ .row form { margin:0; }
+ a.btn,button { display:inline-flex; justify-content:center; align-items:center; gap:7px; padding:9px 14px; min-height:40px;
+                 border:1px solid transparent; border-radius:10px; color:#fff; background:var(--accent); text-decoration:none;
+                 font:inherit; font-size:13px; font-weight:700; line-height:1.3; cursor:pointer;
+                 box-shadow:0 3px 8px rgba(36,91,214,.14); transition:background .15s,transform .15s,box-shadow .15s; }
+ a.btn:hover,button:hover { color:#fff; background:var(--accent-dark); transform:translateY(-1px); box-shadow:0 6px 14px rgba(36,91,214,.17); }
+ a.ok,button.ok { color:#fff; background:var(--ok); box-shadow:none; }
+ a.ok:hover,button.ok:hover { background:#0f684d; }
+ a.bad,button.bad { color:#fff; background:var(--bad); box-shadow:none; }
+ a.bad:hover,button.bad:hover { background:#a9342f; }
+ a.grey,button.grey { color:#34445d; background:#fff; border-color:var(--line-strong); box-shadow:none; }
+ a.grey:hover,button.grey:hover { color:#173e88; background:#f2f6fd; }
+ a.warn,button.warn { color:#77440d; background:var(--warn-soft); border-color:#f4dfbd; box-shadow:none; }
+ a.warn:hover,button.warn:hover { color:#683804; background:#ffedcf; }
+ input,textarea,select { display:block; width:100%; margin:6px 0 13px; padding:10px 12px; color:var(--ink); background:#fff;
+                           border:1px solid var(--line-strong); border-radius:10px; font:inherit; font-size:14px; }
+ input:focus,textarea:focus,select:focus { outline:0; border-color:#7da2ec; box-shadow:0 0 0 3px rgba(36,91,214,.12); }
+ input[type=checkbox],input[type=radio] { width:auto; margin:0; accent-color:var(--accent); }
+ input[type=number] { max-width:260px; }
+ textarea { resize:vertical; min-height:76px; }
+ label { color:#55647a; font-size:12px; font-weight:700; }
+ .chk { display:flex; align-items:center; gap:9px; margin:9px 0; color:#42536c; font-size:13px; }
+ .muted { color:var(--muted); font-size:12.5px; }
+ .pill { display:inline-flex; align-items:center; max-width:100%; padding:3px 9px; color:#506078; background:#f5f7fb;
+         border:1px solid var(--line); border-radius:999px; font-size:11px; font-weight:650; overflow-wrap:anywhere; }
+ .flash,.warnbox { padding:12px 15px; margin:0 0 16px; border-radius:12px; font-weight:600; font-size:14px; }
+ .flash { color:#146247; background:var(--ok-soft); border:1px solid #c6ecd9; }
+ .warnbox { color:#854e10; background:var(--warn-soft); border:1px solid #f1dfc1; }
+ .bar { height:10px; overflow:hidden; background:#edf1f6; border:1px solid var(--line); border-radius:999px; }
+ .bar>i { display:block; height:100%; background:linear-gradient(90deg,#245bd6,#12a27c); transition:width .25s; }
+ .logline { padding:5px 2px; color:#55647a; border-bottom:1px solid #edf0f5; white-space:pre-wrap; word-break:break-word;
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+ .logline:first-child { color:var(--ink); }
+ .badge { display:inline-block; padding:2px 7px; border-radius:999px; color:#46566c; background:#f2f5f9; font-size:11px; }
+ .kv { display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:13px; }
+ .kv div:nth-child(odd) { color:var(--muted); }
+ .steps { padding-left:22px; }
+ .steps li { margin:9px 0; }
+ details { margin:10px 0; padding:14px 16px; background:#fff; border:1px solid var(--line); border-radius:12px; }
+ details summary { cursor:pointer; font-weight:700; }
+ details p { color:var(--muted); margin:9px 0 2px; }
+ .settings-section { padding:0; border:0; background:transparent; }
+ .settings-section summary { display:flex; align-items:center; justify-content:space-between; gap:12px;
+                             padding:14px 16px; background:#fff; border:1px solid var(--line); border-radius:12px;
+                             box-shadow:var(--shadow); }
+ .settings-section[open] summary { border-radius:12px 12px 0 0; }
+ .settings-section .settings-inner { margin-top:0; border-radius:0 0 12px 12px; }
 
- /* ---------- setup wizard ---------- */
- .wiz { max-width:620px; margin:0 auto; padding:34px 18px 60px; }
+ /* Setup and login */
+ .wiz { width:min(640px,100%); margin:0 auto; padding:34px 18px 60px; }
  .wiz .head { text-align:center; margin-bottom:22px; }
- .wiz .head .logo { width:58px; height:58px; font-size:30px; margin:0 auto 14px; border-radius:18px; }
- .wiz .head h2 { font-size:28px; margin:0 0 6px; } .wiz .head p { color:var(--mut); margin:0; }
- .step { display:flex; gap:14px; margin:14px 0; }
- .step .num { flex:0 0 34px; height:34px; border-radius:50%; display:grid; place-items:center; font-weight:800;
-              background:linear-gradient(135deg,#6366f1,#22c55e); color:#fff; margin-top:2px; }
+ .wiz .head .logo { width:58px; height:58px; margin:0 auto 14px; border-radius:18px; font-size:26px; }
+ .wiz .head h2 { margin:0 0 6px; font-size:28px; }
+ .wiz .head p { color:var(--muted); margin:0; }
+ .step { display:flex; gap:14px; margin:16px 0; }
+ .step .num { display:grid; place-items:center; flex:0 0 34px; height:34px; margin-top:2px; border-radius:50%;
+              color:#fff; font-weight:800; background:linear-gradient(145deg,#245bd6,#0f766e); }
  .step .box { flex:1; min-width:0; }
- .step h4 { margin:2px 0 2px; font-size:16px; }
- .step .help { color:var(--mut); font-size:13.5px; margin:0 0 4px; }
- .fe { color:#fca5a5; font-size:13px; min-height:0; margin:0; }
+ .step h4 { margin:2px 0; font-size:15px; }
+ .step .help { color:var(--muted); font-size:13px; margin:0 0 4px; }
+ .fe { min-height:0; margin:0; color:#b33e38; font-size:12px; }
  input.bad-in { border-color:var(--bad); }
- .big { width:100%; padding:14px; font-size:16px; margin-top:12px; }
- .prog { display:none; text-align:center; padding:28px 10px; }
- .spin { width:46px; height:46px; border-radius:50%; border:4px solid #1f2a3d; border-top-color:#7c83ff;
-         margin:0 auto 16px; animation:sp 0.9s linear infinite; }
+ .big { width:100%; min-height:48px; margin-top:12px; font-size:15px; }
+ .prog { display:none; padding:28px 10px; text-align:center; }
+ .spin { width:44px; height:44px; margin:0 auto 16px; border:4px solid #e8edf5; border-top-color:var(--accent); border-radius:50%; animation:sp .9s linear infinite; }
  @keyframes sp { to { transform:rotate(360deg); } }
- .tick { width:60px; height:60px; border-radius:50%; background:rgba(34,197,94,.15); color:#22c55e; font-size:32px;
-         display:grid; place-items:center; margin:0 auto 14px; }
+ .tick { display:grid; place-items:center; width:58px; height:58px; margin:0 auto 14px; border-radius:50%;
+          color:var(--ok); background:var(--ok-soft); font-size:30px; }
 
- @media (max-width: 860px) {
-   aside.side { position:fixed; left:-270px; z-index:40; transition:left .2s; box-shadow:var(--shadow); }
-   body.nav aside.side { left:0; }
-   .burger { display:inline-block; }
-   .topbar { padding:12px 14px; } .content main { padding:16px 14px; }
-   .hero h2 { font-size:30px; }
-   table { display:block; overflow-x:auto; }
+ @media (max-width:900px) {
+   aside.side { position:fixed; left:0; top:0; z-index:40; width:266px; height:100vh; transform:translateX(-102%);
+                box-shadow:var(--shadow-lg); transition:transform .2s ease; }
+   body.nav aside.side { transform:translateX(0); }
+   .burger { display:inline-flex; }
+   .topbar { padding:11px 14px; }
+   .content main { padding:20px 14px 40px; }
+   .hero { padding:30px 22px; }
+ }
+ @media (max-width:620px) {
+   header { gap:8px; padding:10px 14px; }
+   header h1 { font-size:15px; }
+   header .btn { margin-left:auto; }
+   nav.top { width:100%; order:3; overflow-x:auto; flex-wrap:nowrap; }
+   nav.top a { white-space:nowrap; }
+   main { padding:18px 14px 34px; }
+   .topbar h1 { font-size:15px; }
+   .status { font-size:10.5px; padding:5px 8px; }
+   .grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+   .grid .card { padding:14px; }
+   .card .n { font-size:22px; }
+   .page-heading { align-items:flex-start; }
+   table { display:block; overflow-x:auto; white-space:nowrap; }
+   th,td { padding:10px 11px; }
+   .row { align-items:stretch; }
+   .row > .btn,.row > button { flex:0 0 auto; }
  }
 """
 
 ADMIN_NAV = (
-    ("ওভারভিউ", (("/admin", "📊", "ড্যাশবোর্ড"), ("/admin/analytics", "📈", "অ্যানালিটিক্স"))),
-    ("কনটেন্ট", (("/admin/stores", "🏪", "স্টোর"), ("/admin/files", "🗂", "ফাইল"),
-                 ("/admin/links", "🔗", "লিংক"), ("/admin/channels", "📡", "চ্যানেল"))),
-    ("অডিয়েন্স", (("/admin/broadcast", "📢", "ব্রডকাস্ট"), ("/admin/users", "👥", "ইউজার"),
-                  ("/admin/orders", "🧾", "অর্ডার"))),
-    ("সেটিংস", (("/admin/texts", "📝", "বটের লেখা"), ("/admin/settings", "🛠", "সেটিংস"),
-                ("/setup", "🤖", "বট কানেকশন"), ("/admin/download", "📥", "এক্সপোর্ট"),
-                ("/admin/self-test", "🩺", "হেলথ"), ("/admin/security", "🔐", "সিকিউরিটি"))),
+    ("WORKSPACE", (("/admin", "◫", "Overview"), ("/admin/stores", "▦", "Stores"),
+                   ("/admin/files", "▤", "Videos & files"), ("/admin/channels", "◉", "Channels"))),
+    ("AUDIENCE", (("/admin/users", "♙", "Users"), ("/admin/orders", "▧", "Orders"),
+                  ("/admin/broadcast", "↗", "Campaigns"), ("/admin/links", "⌁", "Share links"))),
+    ("INSIGHTS", (("/admin/analytics", "▥", "Analytics"), ("/admin/self-test", "✓", "System health"),
+                  ("/admin/logs", "≡", "Activity logs"), ("/admin/download", "⇩", "Exports"))),
+    ("SETTINGS", (("/setup", "⚙", "Bot connection"), ("/admin/session", "◌", "Telegram session"),
+                  ("/admin/settings", "⚙", "Preferences"), ("/admin/texts", "✎", "Bot messages"),
+                  ("/admin/security", "◇", "Security"))),
 )
 
 
@@ -281,20 +344,36 @@ def _status_pill() -> str:
     return '<a class="status" href="setup"><i></i>বট সংযোগ হচ্ছে…</a>'
 
 
-def layout(title: str, body: str, active: str = "", admin: bool = True) -> str:
-    brand = html.escape(settings.get_str("WEB_TITLE", "Store") or "Store")
+def layout(title: str, body: str, active: str = "", admin: bool = False,
+           canonical_path: str | None = None) -> str:
+    brand = html.escape(settings.get_str("WEB_TITLE", "Ahad OrgEx") or "Ahad OrgEx")
+    site_url = (settings.get_str("SITE_URL", cfg.SITE_URL) or cfg.SITE_URL).rstrip("/")
     base = basepath.current() or ""
+    private_page = active.startswith("/admin") or title in {"Sign in", "Not found"}
+    if private_page:
+        seo = '<meta name="robots" content="noindex,nofollow">'
+    else:
+        canonical_path = canonical_path or (active if active.startswith("/") else "/")
+        canonical_url = site_url + canonical_path
+        seo = (f'<meta property="og:url" content="{html.escape(canonical_url)}">'
+               f'<link rel="canonical" href="{html.escape(canonical_url)}">')
     head = f"""<!doctype html><html lang="bn"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <base href="__BASEPATH__/">
 <title>{html.escape(title)} · {brand}</title>
-<meta name="description" content="Telegram store — files delivered instantly by bot.">
+<meta name="description" content="Telegram store — simple access to your videos and learning content.">
+<meta property="og:site_name" content="{brand}">{seo}
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
 <style>{CSS}</style></head>"""
     if active.startswith("/admin"):
+        def _nav_on(href: str) -> bool:
+            if href == "/admin":
+                return active == href
+            return active == href or active.startswith(href + "/")
+
         groups = "".join(
             f'<div class="grp">{g}</div>' + "".join(
-                f'<a class="{"on" if href == active else ""}" href="{href}"><span class="ic">{ic}</span>{label}</a>'
+                f'<a class="{"on" if _nav_on(href) else ""}" href="{href}"><span class="ic">{ic}</span>{label}</a>'
                 for href, ic, label in items)
             for g, items in ADMIN_NAV)
         page = f"""{head}<body>
@@ -302,8 +381,9 @@ def layout(title: str, body: str, active: str = "", admin: bool = True) -> str:
   <aside class="side">
     <div class="brand"><span class="logo">🎬</span>{brand}</div>
     {groups}
-    <div class="grp">সাইট</div>
-    <a href="/"><span class="ic">🌐</span>পাবলিক সাইট</a>
+    <div class="grp">ACCOUNT</div>
+    <a href="/"><span class="ic">↗</span>Open public site</a>
+    <a href="/admin/logout"><span class="ic">⇥</span>Sign out</a>
   </aside>
   <div class="content">
     <div class="topbar">
@@ -318,14 +398,16 @@ def layout(title: str, body: str, active: str = "", admin: bool = True) -> str:
 <script>document.addEventListener('click',function(e){{if(document.body.classList.contains('nav')&&!e.target.closest('aside')&&!e.target.closest('.burger'))document.body.classList.remove('nav')}})</script>
 </body></html>"""
     else:
-        pub = ((" /", "🏪 স্টোর"), ("/search", "🔍 সার্চ"), ("/help", "❓ সাহায্য"))
-        nav = "".join(f'<a class="{"on" if href.strip() == active else ""}" href="{href.strip()}">{label}</a>'
+        pub = (("/", "🏪 স্টোর"), ("/search", "🔍 সার্চ"), ("/help", "❓ সাহায্য"))
+        nav = "".join(f'<a class="{"on" if href == active else ""}" href="{href}">{label}</a>'
                       for href, label in pub)
+        admin_href = "admin"
+        admin_label = "Dashboard" if admin else "Admin sign in"
         page = f"""{head}<body>
 <header>
-  <h1><span class="logo">🎬</span>{brand}</h1>
+  <h1><span class="logo">◈</span>{brand}</h1>
   <nav class="top">{nav}</nav>
-  <a class="btn" href="admin">⚙️ ম্যানেজ করুন</a>
+  <a class="btn" href="{admin_href}">{admin_label}</a>
 </header>
 <main>{body}</main>
 <footer>Telegram store bot · ফাইল বট নিজেই পাঠায়</footer>
@@ -488,12 +570,18 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     @app.get("/setup", response_class=HTMLResponse)
-    async def setup_view() -> str:
+    async def setup_view(request: Request):
+        if credentials.is_configured() and not _authed(request):
+            return _guard(request)
         return setup_page()
 
     @app.post("/setup/save")
-    async def setup_save(token: str = Form(""), api_id: str = Form(""),
+    async def setup_save(request: Request, token: str = Form(""), api_id: str = Form(""),
                          api_hash: str = Form(""), admins: str = Form("")) -> JSONResponse:
+        # The first-run wizard is open so an owner can configure an empty install.
+        # Once credentials exist, only an authenticated administrator may replace them.
+        if credentials.is_configured() and not _authed(request):
+            return _guard(request)
         return JSONResponse(await credentials.verify_and_save(token, api_id, api_hash, admins))
 
     @app.get("/setup/status")
@@ -510,25 +598,26 @@ def create_app() -> FastAPI:
         bots = _bot_username()
         body = f"""
         <div class="hero">
-          <h2>এক ট্যাপে ফাইল, সিরিজ আর ভিডিও 🎬</h2>
-          <p>{esc(settings.get_str("SITE_TAGLINE")) or "টেলিগ্রাম বটে স্টোর থেকে ফাইল বেছে নিন — বটই ফাইলটি পাঠিয়ে দেবে। নিচের যেকোনো স্টোরে ঢুকুন।"}</p>
+          <p class="eyebrow">AHAD ORGEX · DIGITAL CONTENT</p>
+          <h2>ভিডিও ও learning content—একটি পরিষ্কার জায়গায়।</h2>
+          <p>{esc(settings.get_str("SITE_TAGLINE")) or "আপনার পছন্দের store বেছে নিন। Telegram bot ভিডিওটি সরাসরি পাঠাবে—সহজ, দ্রুত, নিরাপদ।"}</p>
           <div class="row">
-            {f'<a class="btn" href="https://t.me/{bots}">🤖 বটে যান (@{bots})</a>' if bots else ''}
-            <a class="btn grey" href="#stores">🏪 স্টোর দেখুন</a>
+            {f'<a class="btn" href="https://t.me/{bots}">🤖 Telegram-এ খুলুন</a>' if bots else ''}
+            <a class="btn grey" href="#stores">Explore stores ↓</a>
           </div>
         </div>
         <div class="grid">
           {card("Stores", stats['stores'])}
-          {card("Files", stats['files'])}
-          {card("Members", stats['users'])}
-          {card("Views", stats['views'])}
+          {card("Videos & files", stats['files'])}
+          {card("Community", stats['users'])}
+          {card("Total views", stats['views'])}
         </div>
         <div class="howto">
-          <b>কীভাবে ফাইল পাবেন?</b>
-          <span>১️⃣ বট খুলুন</span><span>২️⃣ স্টোর বাছুন</span>
-          <span>৩️⃣ ভিডিওর নামে চাপ দিন — সোজা ভিডিও</span>
+          <b>শুরু করতে তিনটি ধাপ:</b>
+          <span>01 · Store বাছুন</span><span>02 · Telegram-এ খুলুন</span>
+          <span>03 · ভিডিও সরাসরি পান</span>
         </div>
-        <h3 id="stores">🏪 সব স্টোর</h3>
+        <div class="page-heading"><div><p class="eyebrow">DISCOVER</p><h2 id="stores">Available stores</h2></div></div>
         {store_cards(stores)}
         """
         return layout("Home", body, "/", admin=_cookie_ok(request))
@@ -648,32 +737,48 @@ def create_app() -> FastAPI:
         <p>{f'<a class="btn" href="{link}">▶️ বটে খুলুন</a>' if link else '<span class="muted">বট এখনো অনলাইন হয়নি</span>'}</p>
         {files_html}
         """
-        return layout(store["name"], body, "/stores")
+        return layout(store["name"], body, "/stores",
+                      canonical_path=f"/s/{quote_plus(store['slug'])}")
 
     # ------------------------------------------------------------------- auth
-    @app.get("/admin/login")
-    async def login_open():
-        return RedirectResponse("/admin", status_code=303)
+    @app.get("/admin/login", response_class=HTMLResponse)
+    async def login_open(request: Request):
+        if _authed(request):
+            return RedirectResponse("/admin", status_code=303)
+        return await login_form()
 
     async def login_form(error: str = "") -> str:
-        note = '<div class="warnbox">ইউজারনেম বা পাসওয়ার্ড ভুল।</div>' if error else ""
+        note = '<div class="warnbox">ইউজারনেম বা পাসওয়ার্ড মেলেনি। আবার চেষ্টা করুন।</div>' if error else ""
         body = f"""
         {note}
-        <div class="card" style="max-width:420px;margin:40px auto">
-          <h3>🔐 অ্যাডমিন লগইন</h3>
+        <div class="card" style="max-width:440px;margin:40px auto">
+          <p class="eyebrow">ADMIN WORKSPACE</p>
+          <h2>Sign in</h2>
+          <p class="muted">আপনার dashboard-এ প্রবেশ করতে লগইন করুন।</p>
           <form method=post action=/admin/login>
-            <label>Username</label><input name=username value="admin" autocomplete=username>
-            <label>Password</label><input name=password type=password autocomplete=current-password>
-            <button type=submit>লগইন</button>
+            <label>Username</label><input name=username value="{esc(cfg.WEB_USER)}" autocomplete=username required>
+            <label>Password</label><input name=password type=password autocomplete=current-password required>
+            <button type=submit>Continue</button>
           </form>
-          <p class="muted">পাসওয়ার্ড সেট করা থাকে <code>WEB_PASS</code> এনভায়রনমেন্ট ভেরিয়েবলে।
-          সেট না থাকলে বট লগে একটা টেম্পোরারি পাসওয়ার্ড দেখানো হয়।</p>
+          <p class="muted">পাসওয়ার্ড <code>WEB_PASS</code> থেকে আসে। সেট না থাকলে server log-এ
+          একবারের জন্য নিরাপদ পাসওয়ার্ড তৈরি হয়।</p>
         </div>"""
-        return layout("Login", body, "", admin=False)
+        return layout("Sign in", body, "", admin=False)
 
     @app.post("/admin/login")
-    async def login(username: str = Form(""), password: str = Form("")):
-        return RedirectResponse("/admin", status_code=303)
+    async def login(request: Request, username: str = Form(""), password: str = Form("")):
+        good_user = _secure_equal((username or "").strip(), cfg.WEB_USER)
+        good_pass = _secure_equal(password or "", _panel_password())
+        if not (good_user and good_pass):
+            return HTMLResponse(await login_form("1"), status_code=401)
+        response = RedirectResponse("/admin", status_code=303)
+        response.set_cookie(
+            COOKIE_NAME, _session_token(), max_age=max(3600, cfg.WEB_SESSION_HOURS * 3600),
+            httponly=True, secure=(request.url.scheme == "https" or
+                                   request.headers.get("x-forwarded-proto", "").lower() == "https"),
+            samesite="strict", path="/",
+        )
+        return response
 
     @app.get("/admin/logout")
     async def logout():
@@ -689,6 +794,216 @@ def create_app() -> FastAPI:
             return Response("Unauthorized", status_code=401,
                             headers={"WWW-Authenticate": 'Basic realm="store-admin"'})
         return RedirectResponse("/admin/login", status_code=303)
+
+    # -------------------------------------------------------- Telegram session
+    @app.get("/admin/session", response_class=HTMLResponse)
+    async def admin_session(request: Request, flash: str = "", warn: str = ""):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        saved = db.session(admin_id) if admin_id else None
+        online = runtime.is_online(admin_id) if admin_id else False
+        pending = PENDING_SESSIONS.get(admin_id) if admin_id else None
+        if pending and time.time() - pending.get("started_at", 0) > 600:
+            PENDING_SESSIONS.pop(admin_id, None)
+            try:
+                await pending["client"].disconnect()
+            except Exception:
+                pass
+            pending = None
+            warn = warn or "লগইন কোডের সময় শেষ—নতুন কোড নিন।"
+
+        note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
+        warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
+        if not admin_id:
+            session_body = '<div class="warnbox">আগে ADMIN_IDS সেট করুন।</div>'
+        elif pending and pending.get("step") == "password":
+            session_body = f"""<div class="card">
+              <h3>Two-step verification</h3>
+              <p class="muted">Telegram আপনার account-এর 2FA password চেয়েছে। Password Telegram-এ যাচাই হবে;
+              আমরা এটি database-এ রাখি না।</p>
+              <form method=post action="/admin/session/password">
+                <label>Telegram 2FA password</label>
+                <input name=password type=password autocomplete=current-password required>
+                <div class="row"><button class="ok">Verify and connect</button>
+                  <button class="grey" formaction="/admin/session/cancel" formmethod=post>Cancel</button></div>
+              </form></div>"""
+        elif pending and pending.get("step") == "code":
+            session_body = f"""<div class="card">
+              <h3>Enter Telegram login code</h3>
+              <p class="muted">Telegram app/SMS-এ পাঠানো কোডটি দিন। কোডটি শুধু এই login attempt-এর জন্য ব্যবহার হয়।</p>
+              <form method=post action="/admin/session/verify">
+                <label>Login code</label><input name=code inputmode=numeric autocomplete=one-time-code required>
+                <div class="row"><button class="ok">Verify session</button>
+                  <button class="grey" formaction="/admin/session/cancel" formmethod=post>Cancel</button></div>
+              </form></div>"""
+        else:
+            owner = runtime.session_owners.get(admin_id) or (saved or {}).get("owner_id")
+            owner_name = (saved or {}).get("owner_name") or ""
+            if online:
+                status = f"Connected as {esc(owner_name or 'Telegram account')} · ID {esc(str(owner or '—'))}"
+            elif saved:
+                status = f"Saved session: {esc(owner_name or 'Telegram account')} · reconnecting"
+            else:
+                status = "No active Telegram session"
+            disconnect_form = (
+                '<form method=post action="/admin/session/disconnect" '
+                'onsubmit="return confirm(\'Session disconnect করবেন?\')">'
+                '<button class="bad">Disconnect saved session</button></form>' if saved else "")
+            session_body = f"""<div class="card">
+              <div class="row" style="justify-content:space-between">
+                <div><p class="eyebrow">ACCOUNT CONNECTION</p><h3 style="margin:0">{status}</h3>
+                  <p class="muted">Sessionটি private source channel scan, file mirror এবং store channel তৈরিতে ব্যবহৃত হয়।</p></div>
+                <span class="pill">{'Online' if online else ('Saved · reconnecting' if saved else 'Not connected')}</span>
+              </div>
+              <form method=post action="/admin/session/start">
+                <label>Telegram phone number (international format)</label>
+                <input name=phone type=tel placeholder="+8801XXXXXXXXX" autocomplete=tel required>
+                <button class="ok">📲 Send login code</button>
+              </form>
+              {disconnect_form}
+            </div>
+            <div class="card" style="margin-top:14px"><b>Secure sign-in</b>
+              <p class="muted">আপনার login code এই server-এ পাঠাবেন না—শুধু এই secure page-এ লিখুন।
+              Authorized হলে sessionটি SQLite database-এ থাকবে; চাইলে যেকোনো সময় Disconnect করুন।</p>
+              <p class="muted">API ID / API Hash দরকার হলে <a href="/setup">Bot connection</a> থেকে একবার সেট করুন।</p>
+            </div>"""
+
+        body = f"""{note}{warnbox}
+        <div class="page-heading"><div><p class="eyebrow">TELEGRAM</p><h2>Session connection</h2>
+          <p class="muted">Channel ও private content কাজ করাতে নিজের account একবার authorize করুন।</p></div></div>
+        {session_body}"""
+        return layout("Telegram session", body, "/admin/session")
+
+    @app.post("/admin/session/start")
+    async def admin_session_start(request: Request, phone: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        phone = re.sub(r"[\s().-]", "", (phone or "").strip())
+        if not admin_id or not cfg.API_ID or not cfg.API_HASH:
+            return RedirectResponse("/admin/session?warn=API+ID/Hash+ও+ADMIN_IDS+আগে+সেট+করুন", status_code=303)
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+            return RedirectResponse("/admin/session?warn=দেশের+কোডসহ+সঠিক+ফোন+নম্বর+দিন", status_code=303)
+        previous = PENDING_SESSIONS.pop(admin_id, None)
+        if previous:
+            try:
+                await previous["client"].disconnect()
+            except Exception:
+                pass
+        try:
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
+            client = TelegramClient(StringSession(), cfg.API_ID, cfg.API_HASH)
+            await client.connect()
+            sent = await client.send_code_request(phone)
+            PENDING_SESSIONS[admin_id] = {
+                "client": client,
+                "phone": phone,
+                "phone_code_hash": getattr(sent, "phone_code_hash", ""),
+                "step": "code",
+                "started_at": time.time(),
+            }
+            return RedirectResponse("/admin/session?flash=Telegram+login+code+পাঠানো+হয়েছে", status_code=303)
+        except Exception as exc:
+            log.warning("Telegram website login code request failed: %s", type(exc).__name__)
+            return RedirectResponse("/admin/session?warn=Telegram+code+পাঠানো+যায়নি—নম্বর+ও+API+তথ্য+যাচাই+করুন", status_code=303)
+
+    async def _complete_web_session(admin_id: int, pending: dict) -> str:
+        client = pending["client"]
+        me = await client.get_me()
+        session_string = client.session.save()
+        old = runtime.user_clients.get(admin_id)
+        if old is not None and old is not client:
+            try:
+                await old.disconnect()
+            except Exception:
+                pass
+        db.save_session(admin_id, session_string, me.id, me.first_name or "")
+        runtime.register_client(admin_id, client, me.id, me.first_name or "")
+        PENDING_SESSIONS.pop(admin_id, None)
+        log.info("Telegram user session connected from website for admin %s", admin_id)
+        return me.first_name or "Telegram account"
+
+    @app.post("/admin/session/verify")
+    async def admin_session_verify(request: Request, code: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        pending = PENDING_SESSIONS.get(admin_id)
+        if not pending or pending.get("step") != "code":
+            return RedirectResponse("/admin/session?warn=লগইন+চেষ্টা+পাওয়া+যায়নি—নতুন+কোড+নিন", status_code=303)
+        if time.time() - pending.get("started_at", 0) > 600:
+            try:
+                await pending["client"].disconnect()
+            except Exception:
+                pass
+            PENDING_SESSIONS.pop(admin_id, None)
+            return RedirectResponse("/admin/session?warn=কোডের+মেয়াদ+শেষ—নতুন+কোড+নিন", status_code=303)
+        try:
+            from telethon.errors import SessionPasswordNeededError
+            await pending["client"].sign_in(
+                phone=pending["phone"], code=(code or "").strip(),
+                phone_code_hash=pending["phone_code_hash"],
+            )
+            name = await _complete_web_session(admin_id, pending)
+            return RedirectResponse("/admin/session?flash=Session+connected:+" + quote_plus(name), status_code=303)
+        except SessionPasswordNeededError:
+            pending["step"] = "password"
+            return RedirectResponse("/admin/session", status_code=303)
+        except Exception as exc:
+            log.warning("Telegram website login code verification failed: %s", type(exc).__name__)
+            return RedirectResponse("/admin/session?warn=কোড+সঠিক+নয়+বা+মেয়াদ+শেষ—আবার+চেষ্টা+করুন", status_code=303)
+
+    @app.post("/admin/session/password")
+    async def admin_session_password(request: Request, password: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        pending = PENDING_SESSIONS.get(admin_id)
+        if not pending or pending.get("step") != "password":
+            return RedirectResponse("/admin/session?warn=2FA+login+চেষ্টা+পাওয়া+যায়নি", status_code=303)
+        try:
+            await pending["client"].sign_in(password=password)
+            name = await _complete_web_session(admin_id, pending)
+            return RedirectResponse("/admin/session?flash=Session+connected:+" + quote_plus(name), status_code=303)
+        except Exception as exc:
+            log.warning("Telegram website 2FA verification failed: %s", type(exc).__name__)
+            return RedirectResponse("/admin/session?warn=2FA+password+যাচাই+হয়নি—আবার+চেষ্টা+করুন", status_code=303)
+
+    @app.post("/admin/session/cancel")
+    async def admin_session_cancel(request: Request):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        pending = PENDING_SESSIONS.pop(admin_id, None)
+        if pending:
+            try:
+                await pending["client"].disconnect()
+            except Exception:
+                pass
+        return RedirectResponse("/admin/session?flash=Login+cancelled", status_code=303)
+
+    @app.post("/admin/session/disconnect")
+    async def admin_session_disconnect(request: Request):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        admin_id = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
+        client = runtime.user_clients.get(admin_id)
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        runtime.unregister_client(admin_id)
+        db.delete_session(admin_id)
+        return RedirectResponse("/admin/session?flash=Telegram+session+disconnected", status_code=303)
 
     # -------------------------------------------------------------- dashboard
     @app.get("/admin", response_class=HTMLResponse)
@@ -709,19 +1024,26 @@ def create_app() -> FastAPI:
         bot_state = ("🟢 চলছে" if runtime.bot_online() else "🔴 বট অফলাইন "
                      "(ব্রডকাস্ট কিউতে থাকবে)")
         body = f"""
-        <h3>📊 ড্যাশবোর্ড</h3>
-        <div class="grid">
-          {card("Users", stats['users'])} {card("Files", stats['files'])}
-          {card("Stores", stats['stores'])} {card("Views", stats['views'])}
-          {card("Granted", stats['grants'])} {card("Revenue", money(revenue['total'], settings.get_str('CURRENCY', '৳')))}
-          {card("Pending orders", revenue['pending'])} {card("Open tickets", stats['tickets_open'])}
+        <div class="page-heading"><div><p class="eyebrow">AHAD ORGEX / OVERVIEW</p>
+          <h2>Welcome back</h2><p class="muted">আপনার content, audience ও orders—সব এক জায়গায়।</p></div>
+          <span class="pill">{bot_state} · {int(time.time() - STARTED_AT)}s uptime</span></div>
+        <div class="row" style="margin:0 0 18px">
+          <a class="btn" href="/admin/stores/new">＋ Create store</a>
+          <a class="btn grey" href="/admin/session">📲 Connect Telegram</a>
+          <a class="btn grey" href="/admin/broadcast">↗ New campaign</a>
+          <a class="btn grey" href="/admin/self-test">✓ Run system check</a>
         </div>
-        <p class="muted">বট: {bot_state} · সার্ভার আপটাইম: {int(time.time() - STARTED_AT)}s · আজ: {today}</p>
-        <h3>📢 সাম্প্রতিক ব্রডকাস্ট</h3>
-        <table><tr><th>#</th><th>Title</th><th>Audience</th><th>Status</th><th>Sent</th><th></th></tr>
+        <div class="grid">
+          {card("Users", stats['users'])} {card("Videos & files", stats['files'])}
+          {card("Stores", stats['stores'])} {card("Views", stats['views'])}
+          {card("Access granted", stats['grants'])} {card("Revenue", money(revenue['total'], settings.get_str('CURRENCY', '৳')))}
+          {card("Pending orders", revenue['pending'])} {card("Open support tickets", stats['tickets_open'])}
+        </div>
+        <p class="muted">আজ: {today} · Store ও account settings যেকোনো সময় পরিবর্তন করতে পারবেন।</p>
+        <div class="page-heading"><div><p class="eyebrow">ACTIVITY</p><h2>Recent campaigns</h2></div>
+          <a class="btn grey" href="/admin/broadcast">View all</a></div>
+        <table><tr><th>#</th><th>Campaign</th><th>Audience</th><th>Status</th><th>Sent</th><th></th></tr>
         {campaign_rows}</table>
-        <p><a class="btn" href="/admin/broadcast">📢 নতুন ব্রডকাস্ট</a>
-           <a class="btn grey" href="/admin/files">🗂 ফাইল</a></p>
         """
         return layout("Dashboard", body, "/admin")
 
@@ -1015,7 +1337,7 @@ def create_app() -> FastAPI:
 
     # --------------------------------------------------------------- content
     @app.get("/admin/stores", response_class=HTMLResponse)
-    async def admin_stores(request: Request):
+    async def admin_stores(request: Request, flash: str = "", warn: str = ""):
         blocked = _guard(request)
         if blocked:
             return blocked
@@ -1031,12 +1353,168 @@ def create_app() -> FastAPI:
                 f"<td>{stats['files']}</td><td>{stats['views']}</td><td>{stats['grants']}</td>"
                 f"<td>{money(sales['revenue'], settings.get_str('CURRENCY', '৳'))}</td>"
                 f"<td>{len(db.plans(store['id'], only_active=True))}</td><td>{drip_txt}</td>"
-                f"<td><a class='btn' href='/admin/stores/{store['id']}'>🛠 ম্যানেজ</a> "
-                f"<a class='btn grey' href='/admin/analytics/store/{store['id']}'>📊</a> "
-                f"<a class='btn grey' href='/s/{esc(store['slug'] or store['id'])}'>🌐</a></td></tr>")
-        return layout("Stores", f"<h3>🏪 স্টোর</h3><table><tr><th>Store</th><th>Files</th><th>Views</th>"
-                                f"<th>Granted</th><th>Revenue</th><th>Plans</th><th>Drip</th><th></th></tr>"
-                                f"{''.join(rows)}</table>", "/admin/stores")
+                f"<td>{'✅ ' + esc(store.get('publish_channel_title') or 'linked') if store.get('publish_channel_id') else '—'}</td>"
+                f"<td><a class='btn' href='/admin/stores/{store['id']}'>Manage</a> "
+                f"<a class='btn grey' href='/admin/analytics/store/{store['id']}'>Stats</a> "
+                f"<a class='btn grey' href='/s/{esc(store['slug'] or store['id'])}'>Public page</a></td></tr>")
+        note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
+        warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
+        body = f"""{note}{warnbox}
+        <div class="page-heading"><div><p class="eyebrow">CONTENT WORKSPACE</p><h2>Stores</h2>
+          <p class="muted">প্রতিটি store-এর ভিডিও, access, Telegram channel ও analytics এক জায়গায়।</p></div>
+          <a class="btn" href="/admin/stores/new">＋ Create store</a></div>
+        <table><tr><th>Store</th><th>Files</th><th>Views</th><th>Granted</th><th>Revenue</th>
+        <th>Plans</th><th>Drip</th><th>Video channel</th><th>Actions</th></tr>
+        {''.join(rows) or "<tr><td colspan=9 class='muted'>এখনো store নেই — Create store দিয়ে শুরু করুন।</td></tr>"}</table>"""
+        return layout("Stores", body, "/admin/stores")
+
+    @app.get("/admin/stores/new", response_class=HTMLResponse)
+    async def admin_store_new(request: Request, warn: str = ""):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
+        body = f"""{warnbox}
+        <div class="page-heading"><div><p class="eyebrow">CONTENT WORKSPACE</p><h2>Create a store</h2>
+          <p class="muted">প্রতিটি store-এ আলাদা ভিডিও, access, analytics ও Telegram publish channel রাখা যাবে।</p></div></div>
+        <div class="card" style="max-width:760px">
+          <form method=post action="/admin/stores/new">
+            <label>Store name</label><input name=name maxlength=100 placeholder="e.g. Beginner · Level 1" required>
+            <label>Description</label><textarea name=description rows=4 placeholder="এই store-এ কী থাকবে…"></textarea>
+            <label>Access</label>
+            <select name=is_premium><option value="0">Free — সবাই দেখতে পারবে</option>
+              <option value="1" selected>Premium — access / plan লাগবে</option></select>
+            <label class="chk"><input type=checkbox name=create_channel value=1 checked>
+              নিজের Telegram session দিয়ে এই store-এর জন্য private channel তৈরি করুন</label>
+            <p class="muted">Channel creation-এর জন্য আগে Telegram session connect থাকতে হবে। Bot-কে channel admin করা গেলে
+            নতুন ভিডিওগুলো channel-এ auto-post হবে।</p>
+            <div class="row"><button class="ok">＋ Store তৈরি করুন</button>
+              <a class="btn grey" href="/admin/stores">Cancel</a></div>
+          </form>
+        </div>"""
+        return layout("Create store", body, "/admin/stores")
+
+    @app.post("/admin/stores/new")
+    async def admin_store_create(request: Request, name: str = Form(""),
+                                 description: str = Form(""), is_premium: str = Form("1"),
+                                 create_channel: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        name = (name or "").strip()[:100]
+        if not name:
+            return RedirectResponse("/admin/stores/new?warn=Store+name+প্রয়োজন", status_code=303)
+        if not cfg.ADMIN_IDS:
+            return RedirectResponse("/admin/stores/new?warn=আগে+ADMIN_IDS+সেট+করুন", status_code=303)
+        admin_id = cfg.ADMIN_IDS[0]
+        existing = db.store_by_name(admin_id, name)
+        if existing:
+            return RedirectResponse(f"/admin/stores/{existing['id']}?warn=এই+নামে+store+আগেই+আছে",
+                                    status_code=303)
+        store = db.create_store(admin_id, name)
+        db.update_store(store["id"], description=(description or "").strip()[:2000],
+                        is_premium=1 if str(is_premium) == "1" else 0)
+        message = "Store তৈরি হয়েছে।"
+        if create_channel:
+            result = await channels.create_store_channel(store["id"], title=name)
+            if not result.get("ok"):
+                return RedirectResponse(
+                    f"/admin/stores/{store['id']}?warn=" + quote_plus(
+                        f"Store তৈরি হয়েছে, কিন্তু channel হয়নি: {result.get('error') or 'unknown'}"),
+                    status_code=303)
+            message += " Telegram channel তৈরি হয়েছে।"
+            if result.get("warning"):
+                message += " " + result["warning"]
+        return RedirectResponse(f"/admin/stores/{store['id']}?flash=" + quote_plus(message),
+                                status_code=303)
+
+    @app.post("/admin/stores/{store_id}/edit")
+    async def admin_store_edit(request: Request, store_id: int, name: str = Form(""),
+                               description: str = Form(""), is_premium: str = Form("1")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        store = db.store(store_id)
+        name = (name or "").strip()[:100]
+        if not store:
+            return RedirectResponse("/admin/stores?warn=Store+পাওয়া+যায়নি", status_code=303)
+        if not name:
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=Store+name+প্রয়োজন", status_code=303)
+        duplicate = db.store_by_name(store["admin_id"], name)
+        if duplicate and duplicate["id"] != store_id:
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=এই+নামে+আরেকটি+store+আছে", status_code=303)
+        db.update_store(store_id, name=name, description=(description or "").strip()[:2000],
+                        is_premium=1 if str(is_premium) == "1" else 0)
+        return RedirectResponse(f"/admin/stores/{store_id}?flash=তথ্য+সংরক্ষণ+হয়েছে", status_code=303)
+
+    @app.post("/admin/stores/{store_id}/channel/create")
+    async def admin_store_channel_create(request: Request, store_id: int, title: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        store = db.store(store_id)
+        if not store:
+            return RedirectResponse("/admin/stores?warn=Store+পাওয়া+যায়নি", status_code=303)
+        result = await channels.create_store_channel(store_id, title=title)
+        if not result.get("ok"):
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=" + quote_plus(result.get("error") or "Channel তৈরি হয়নি"),
+                                    status_code=303)
+        message = f"Telegram channel তৈরি হয়েছে: {result.get('title') or store['name']}"
+        files = db.files_of(store_id, newest_first=True)
+        if files and result.get("auto_post"):
+            post = await channels.auto_post_new_file(files[0]["id"], store_id)
+            if post.get("ok"):
+                message += " · সর্বশেষ ভিডিও পোস্ট করা হয়েছে।"
+            else:
+                message += " · ভিডিও পোস্ট হয়নি: " + str(post.get("error") or "unknown")[:100]
+        if result.get("warning"):
+            message += " " + result["warning"]
+        return RedirectResponse(f"/admin/stores/{store_id}?flash=" + quote_plus(message), status_code=303)
+
+    @app.post("/admin/stores/{store_id}/channel/autopost")
+    async def admin_store_channel_autopost(request: Request, store_id: int,
+                                           enabled: str = Form("")):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        store = db.store(store_id)
+        if not store:
+            return RedirectResponse("/admin/stores?warn=Store+পাওয়া+যায়নি", status_code=303)
+        if not store.get("publish_channel_id"):
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=আগে+একটি+publish+channel+তৈরি+করুন", status_code=303)
+        if enabled:
+            result = await channels.enable_store_channel(store_id)
+            if not result.get("ok"):
+                return RedirectResponse(f"/admin/stores/{store_id}?warn=" +
+                                        quote_plus(result.get("error") or "Bot access চালু হয়নি"), status_code=303)
+            message = "নতুন upload-এর auto-post চালু।"
+        else:
+            db.update_store(store_id, auto_post_enabled=0)
+            message = "নতুন upload-এর auto-post বন্ধ।"
+        return RedirectResponse(f"/admin/stores/{store_id}?flash=" + quote_plus(message), status_code=303)
+
+    @app.post("/admin/stores/{store_id}/channel/post-latest")
+    async def admin_store_channel_post_latest(request: Request, store_id: int):
+        blocked = _guard(request)
+        if blocked:
+            return blocked
+        store = db.store(store_id)
+        files = db.files_of(store_id, newest_first=True)
+        if not store or not store.get("publish_channel_id"):
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=Publish+channel+সেট+নেই", status_code=303)
+        if not files:
+            return RedirectResponse(f"/admin/stores/{store_id}?warn=পোস্ট+করার+মতো+ভিডিও+নেই", status_code=303)
+        defaults = channels.composer_defaults(store_id)
+        result = await channels.publish(
+            store["publish_channel_id"], text=defaults["text"],
+            file_ids=[files[0]["id"]], buttons=defaults["buttons"],
+            store_id=store_id, link_limit=-1,
+        )
+        if result.get("ok"):
+            message = "সর্বশেষ ভিডিও channel-এ পোস্ট হয়েছে।"
+            return RedirectResponse(f"/admin/stores/{store_id}?flash=" + quote_plus(message), status_code=303)
+        return RedirectResponse(f"/admin/stores/{store_id}?warn=" +
+                                quote_plus(result.get("error") or "Video পোস্ট করা যায়নি"), status_code=303)
 
     @app.get("/admin/files", response_class=HTMLResponse)
     async def admin_files(request: Request, q: str = "", store: int = 0, flash: str = ""):
@@ -1446,19 +1924,23 @@ def create_app() -> FastAPI:
                          f'🆔 <code>{esc(resolved_id) or "— এখনো রেজলভ হয়নি —"}</code></p>'
                          f'<p class="muted">প্রাইভেট চ্যানেল হলে ইনভাইট লিংক '
                          f'(<code>t.me/+…</code>) দিন — বট সেটাও বুঝবে।</p>')
+            opened = " open" if group.key == "site" else ""
             groups_html.append(f"""
-            <div class="card" style="margin-bottom:14px">
-              <h3>{group.icon} {esc(group.label)}</h3>
-              <p class="muted">{esc(group.blurb)}</p>
-              <form method=post action="/admin/settings/save">
-                <input type="hidden" name="__group" value="{group.key}">
-                {fields}
-                {extra}
-                <div class="row" style="margin-top:10px">
-                  <button class="ok" type="submit">💾 সেভ করুন</button>
-                </div>
-              </form>
-            </div>""")
+            <details class="settings-section"{opened}>
+              <summary><span>{group.icon} {esc(group.label)}</span>
+                <span class="muted">{len(group.settings)} settings · click to expand</span></summary>
+              <div class="card settings-inner">
+                <p class="muted">{esc(group.blurb)}</p>
+                <form method=post action="/admin/settings/save">
+                  <input type="hidden" name="__group" value="{group.key}">
+                  {fields}
+                  {extra}
+                  <div class="row" style="margin-top:10px">
+                    <button class="ok" type="submit">💾 সেভ করুন</button>
+                  </div>
+                </form>
+              </div>
+            </details>""")
         body = f"""
         {note}{warnbox}
         <h3>⚙️ সেটিংস</h3>

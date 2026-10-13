@@ -68,7 +68,7 @@ from telethon.tl.types import (
 
 # ---------- config (sob ekhane, env lagbe na) ----------
 API_ID = 37109385
-API_HASH = "b50a9ccaf4a0352b895a9fb2998c7f0d"
+API_HASH = ''
 SESSION = ""  # chaile ekhane session string boshao, na hole site e paste koro
 
 DEFAULT_CFG = {

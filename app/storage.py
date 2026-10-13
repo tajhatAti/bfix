@@ -46,7 +46,11 @@ CREATE TABLE IF NOT EXISTS stores (
     created_at  REAL,
     is_premium  INTEGER DEFAULT 1,
     cover       TEXT,
-    description TEXT
+    description TEXT,
+    publish_channel_id INTEGER,
+    publish_channel_title TEXT DEFAULT '',
+    publish_channel_link TEXT DEFAULT '',
+    auto_post_enabled INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -377,6 +381,10 @@ class Database:
             ("files", "bytes", "ALTER TABLE files ADD COLUMN bytes INTEGER"),
             ("files", "locked", "ALTER TABLE files ADD COLUMN locked INTEGER DEFAULT 0"),
             ("stores", "forcejoin", "ALTER TABLE stores ADD COLUMN forcejoin TEXT DEFAULT ''"),
+            ("stores", "publish_channel_id", "ALTER TABLE stores ADD COLUMN publish_channel_id INTEGER"),
+            ("stores", "publish_channel_title", "ALTER TABLE stores ADD COLUMN publish_channel_title TEXT DEFAULT ''"),
+            ("stores", "publish_channel_link", "ALTER TABLE stores ADD COLUMN publish_channel_link TEXT DEFAULT ''"),
+            ("stores", "auto_post_enabled", "ALTER TABLE stores ADD COLUMN auto_post_enabled INTEGER DEFAULT 0"),
         ):
             columns = {row["name"] for row in
                        self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -552,7 +560,11 @@ class Database:
         return [dict(r) for r in self._q("SELECT * FROM stores ORDER BY id")]
 
     def update_store(self, store_id: int, **fields: Any) -> None:
-        allowed = {"name", "slug", "is_premium", "cover", "description", "forcejoin"}
+        allowed = {
+            "name", "slug", "is_premium", "cover", "description", "forcejoin",
+            "publish_channel_id", "publish_channel_title", "publish_channel_link",
+            "auto_post_enabled",
+        }
         sets, params = [], []
         for key, value in fields.items():
             if key not in allowed:

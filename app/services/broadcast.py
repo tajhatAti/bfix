@@ -315,8 +315,8 @@ def _classify(exc: Exception) -> str:
     # Only wording that really means "this person cannot be reached". "chat not
     # found" / "not enough rights" can come from OUR side (the file copy), and
     # treating them as a block used to mark the whole audience as blocked.
-    for needle in ("blocked by the user", "user is blocked", "deactivated", "kicked",
-                   "user is deleted", "privacy"):
+    for needle in ("blocked by the user", "user is blocked", "user blocked the bot",
+                   "deactivated", "kicked", "user is deleted", "privacy"):
         if needle in message:
             return "blocked"
     return "failed"
@@ -373,7 +373,7 @@ async def run_campaign(campaign_id: int, progress: ProgressCb | None = None,
                        started_at=campaign.get("started_at") or time.time(),
                        last_error="")
     log.info("Campaign #%s started: %s pending of %s", campaign_id, len(pending), total)
-    blocked_users.clear()      # a stale "blocked" guess from an earlier run must not skip people
+    # Keep known blockers across campaigns; a /start event clears the cache if they return.
 
     started = time.time()
     already_done = counts["done"]

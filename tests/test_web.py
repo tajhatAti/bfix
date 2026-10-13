@@ -4,6 +4,7 @@ Skipped automatically when FastAPI/httpx are not installed.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import pytest
@@ -74,18 +75,43 @@ def test_health_is_public(client):
 
 
 # ------------------------------------------------------------------ admin auth
-def test_admin_panel_is_open_without_password(client):
-    # Owner's choice: no username / password for the website panel.
-    assert client.get("/admin", follow_redirects=False).status_code == 200
-    assert client.get("/admin/login", follow_redirects=False).status_code == 303
-    assert client.get("/admin", headers=_auth("admin", "wrong")).status_code == 200
+def test_admin_panel_requires_valid_credentials(client):
+    response = client.get("/admin", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
+    assert client.get("/admin/login", follow_redirects=False).status_code == 200
+    assert client.get("/admin", headers=_auth("admin", "wrong")).status_code == 401
+    assert client.get("/admin", headers=_auth()).status_code == 200
 
 
-def test_login_form_post_just_opens_the_panel(client):
-    response = client.post("/admin/login", data={"username": "x", "password": "y"},
+def test_login_form_rejects_bad_password_and_sets_secure_cookie(client):
+    invalid = client.post("/admin/login", data={"username": "x", "password": "y"},
+                          follow_redirects=False)
+    assert invalid.status_code == 401
+
+    response = client.post("/admin/login", data={"username": "admin", "password": "secret"},
                            follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin"
+    cookie = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+    assert client.get("/admin", follow_redirects=False).status_code == 200
+
+
+def test_telegram_session_page_requires_admin_and_never_renders_session_string(client):
+    assert client.get("/admin/session", follow_redirects=False).status_code == 303
+    db.save_session(ADMIN_ID, "very-sensitive-session-string", 123456, "Owner")
+    page = client.get("/admin/session", headers=_auth()).text
+    assert "Session connection" in page
+    assert "Owner" in page
+    assert "very-sensitive-session-string" not in page
+
+
+def test_setup_credentials_cannot_be_replaced_without_admin_auth(client):
+    response = client.post("/setup/save", data={"token": "", "api_id": "", "api_hash": "", "admins": ""},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
 
 
 def test_dashboard_shows_stats_and_recent_campaigns(client):
@@ -94,8 +120,72 @@ def test_dashboard_shows_stats_and_recent_campaigns(client):
     broadcast.create_campaign(ADMIN_ID, text="hello", audience="all")
 
     page = client.get("/admin", headers=_auth()).text
-    assert "ড্যাশবোর্ড" in page or "Dashboard" in page
+    assert "Welcome back" in page
     assert "#1" in page
+    assert "Create store" in page
+
+
+def test_store_can_be_created_and_edited_from_the_website(client):
+    new_page = client.get("/admin/stores/new", headers=_auth())
+    assert new_page.status_code == 200
+    response = client.post("/admin/stores/new", headers=_auth(),
+                           data={"name": "Level One", "description": "Foundations",
+                                 "is_premium": "0"}, follow_redirects=False)
+    assert response.status_code == 303
+    store = db.store_by_name(ADMIN_ID, "Level One")
+    assert store is not None and store["is_premium"] == 0
+    assert store["description"] == "Foundations"
+
+    response = client.post(f"/admin/stores/{store['id']}/edit", headers=_auth(),
+                           data={"name": "Level One · Updated", "description": "Updated",
+                                 "is_premium": "1"}, follow_redirects=False)
+    assert response.status_code == 303
+    updated = db.store(store["id"])
+    assert updated["name"] == "Level One · Updated"
+    assert updated["is_premium"] == 1
+
+
+def test_store_creation_can_create_a_session_channel(client, monkeypatch):
+    from app.services import channels
+
+    async def fake_create(store_id, title=""):
+        db.update_store(store_id, publish_channel_id=-10012345,
+                        publish_channel_title=title, publish_channel_link="https://t.me/+invite",
+                        auto_post_enabled=1)
+        return {"ok": True, "title": title, "auto_post": True}
+
+    monkeypatch.setattr(channels, "create_store_channel", fake_create)
+    response = client.post("/admin/stores/new", headers=_auth(),
+                           data={"name": "Channel-backed Store", "description": "",
+                                 "is_premium": "1", "create_channel": "1"},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    store = db.store_by_name(ADMIN_ID, "Channel-backed Store")
+    assert store["publish_channel_id"] == -10012345
+    page = client.get(f"/admin/stores/{store['id']}", headers=_auth())
+    assert "Telegram channel" in page.text
+    assert "Channel-backed Store" in page.text
+
+
+def test_store_autopost_uses_its_own_channel_when_global_autopost_is_off(client, monkeypatch):
+    from app.services import channels, settings
+    store = _store("Channel Store")
+    file_id = db.files_of(store["id"])[0]["id"]
+    db.update_store(store["id"], publish_channel_id=-10054321,
+                    publish_channel_title="Channel Store", auto_post_enabled=1)
+    settings._cache.clear()
+    settings.set("AUTO_POST_ENABLED", "0")
+    seen = {}
+
+    async def fake_publish(target, **kwargs):
+        seen["target"] = target
+        seen["file_ids"] = kwargs.get("file_ids")
+        return {"ok": True}
+
+    monkeypatch.setattr(channels, "publish", fake_publish)
+    result = asyncio.run(channels.auto_post_new_file(file_id, store["id"]))
+    assert result["ok"] is True
+    assert seen == {"target": -10054321, "file_ids": [file_id]}
 
 
 # ------------------------------------------------------------------- studio
@@ -148,8 +238,8 @@ def test_file_broadcast_from_the_panel(client):
     file_id = db.files_of(store["id"])[0]["id"]
     db.touch_user(USER_ID, "Buyer", "buyer")
 
-    assert f"Broadcast" in client.get(f"/admin/files/broadcast/{file_id}",
-                                      headers=_auth()).text
+    assert "File broadcast" in client.get(f"/admin/files/broadcast/{file_id}",
+                                          headers=_auth()).text
     response = client.post(f"/admin/files/broadcast/{file_id}",
                            data={"audience": "all", "text": "", "action": "draft"},
                            headers=_auth(), follow_redirects=False)
@@ -211,6 +301,7 @@ def test_settings_page_shows_every_group(client):
     assert page.status_code == 200
     for label in ("চ্যানেল জয়েন", "পেমেন্ট", "সাপোর্ট", "ব্রডকাস্ট গতি"):
         assert label in page.text, f"{label} group missing"
+    assert "SITE_URL" in page.text
     assert "FORCE_CHANNEL" in page.text
 
 
@@ -282,7 +373,7 @@ def test_public_site_uses_saved_title(client):
 def test_admin_nav_exposes_the_new_sections(client):
     page = client.get("/admin", headers=_auth())
     assert page.status_code == 200
-    for label in ("📡 Channels", "📊 Analytics", "🔗 Links"):
+    for label in ("Channels", "Analytics", "Share links", "Telegram session"):
         assert label in page.text
 
 
@@ -397,7 +488,7 @@ def test_store_page_has_its_own_force_channel_editor(client):
     store = _store("Channelled store")
     page = client.get(f"/admin/stores/{store['id']}", headers=_auth())
     assert page.status_code == 200
-    assert "আলাদা চ্যানেল" in page.text
+    assert "বাধ্যতামূলক চ্যানেল" in page.text
 
 
 def test_store_force_channel_saved_from_the_site(client, monkeypatch):
@@ -442,8 +533,8 @@ def test_help_page_offers_a_way_to_reach_the_admin(client):
 def test_home_teaches_the_three_steps(client):
     _store("Free Movies")
     page = client.get("/")
-    assert "কীভাবে ফাইল পাবেন" in page.text
-    assert "সোজা ভিডিও" in page.text
+    assert "শুরু করতে তিনটি ধাপ" in page.text
+    assert "ভিডিও সরাসরি পান" in page.text
 
 
 # ------------------------------------------- per-video broadcast from the panel

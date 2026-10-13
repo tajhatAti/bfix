@@ -121,18 +121,24 @@
 
 ---
 
-## ১০. ওয়েব ড্যাশবোর্ড (ঐচ্ছিক)
+## ১০. ওয়েবসাইট ও অ্যাডমিন ড্যাশবোর্ড
 
 | ভেরিয়েবল | ডিফল্ট | কাজ |
 |---|---|---|
-| `WEB_ENABLED` | `false` | ড্যাশবোর্ড চালু/বন্ধ |
-| `WEB_HOST` | `0.0.0.0` | কোন ঠিকানায় শুনবে (হোস্টিং-এ `0.0.0.0` দরকার — নাহলে বাইরে থেকে দেখা যাবে না) |
-| `WEB_PORT` | `8080` | পোর্ট |
-| `WEB_USER` | `admin` | লগইনের ইউজারনেম |
-| `WEB_PASS` | *(খালি)* | লগইনের পাসওয়ার্ড — **খালি থাকলে ড্যাশবোর্ড চালুই হবে না** (সুরক্ষা) |
-| `WEB_SECRET` | *(খালি)* | ভবিষ্যতের সেশন/CSRF কী |
+| `WEB_ENABLED` | `true` | সাইট চালু/বন্ধ; hosted `$PORT` থাকলে listener চালু থাকে |
+| `WEB_HOST` | `0.0.0.0` | কোন ঠিকানায় শুনবে (hosting-এ `0.0.0.0` দরকার) |
+| `WEB_PORT` | `8080` | local পোর্ট; hosted service-এর `PORT` অগ্রাধিকার পায় |
+| `WEB_USER` | `admin` | অ্যাডমিন username |
+| `WEB_PASS` | *(খালি)* | অ্যাডমিন password; খালি হলে একবারের temporary password server log-এ দেয় |
+| `WEB_SECRET` | *(খালি)* | admin cookie signing key; production-এ দীর্ঘ random value দিন |
+| `WEB_TITLE` | `Ahad OrgEx` | সাইটের নাম |
+| `SITE_URL` | `https://ahadorgex.onrender.com` | public domain / canonical site URL |
+| `SITE_TAGLINE` | *(খালি)* | public landing page-এর পরিচিতি |
+| `SITE_CONTACT` | *(খালি)* | public support contact |
 
-চালাতে: `pip install -r requirements-web.txt` তারপর `python -m web.dashboard`
+`/admin` এবং `/setup`-এর credential-change action লগইন ছাড়া খোলে না। `WEB_PASS` সেট না থাকলে
+startup log থেকে temporary password নিয়ে লগইন করুন; Render-এ স্থায়ীভাবে চালাতে `WEB_PASS`
+Environment Variable হিসেবে সেট করুন।
 
 ---
 
@@ -199,7 +205,7 @@
 | `WEB_ENABLED` | `true` | সাইট + অ্যাডমিন প্যানেল চালু/বন্ধ। `$PORT` থাকলে (হোস্টিং প্যানেল) সবসময় চালু |
 | `PORT` | `8080` | হোস্টিং প্যানেল যে পোর্ট দেয় — `run.py`/`bot.py`/`main.py` ওটা @ `0.0.0.0`-এ লিসেন করে |
 | `WEB_HOST` | `0.0.0.0` | বাইরে থেকে ঢোকার জন্য `0.0.0.0` রাখুন (প্যানেল প্রিভিউর জন্য জরুরি)। সেট না করলে প্যানেলের দেওয়া `HOST` মানটাই ধরা হয় |
-| `WEB_PASS` | — | অ্যাডমিন প্যানেলে ঢোকার পাসওয়ার্ড (সেট না করলে প্যানেল বন্ধ) |
+| `WEB_PASS` | — | অ্যাডমিন প্যানেলের password (না দিলে প্রথম startup-এ log-এ temporary password তৈরি হয়) |
 
 প্যানেলের লাইভ লিঙ্ক `/live/<job>/` আকারে হয় — অ্যাপ `X-Forwarded-Prefix` পড়ে
 প্রতিটা লিঙ্ক ওই প্রিফিক্সের ভিতরে রাখে, তাই মেনু/ফর্ম/রিডাইরেক্ট ভাঙে না।
