@@ -130,13 +130,18 @@ def unregister_client(admin_id: int) -> None:
 
 
 def bot_online() -> bool:
-    """True only when the bot really finished signing in.
+    """True only while the Telegram client is connected and has finished signing in.
 
-    A client object exists from the first moment we try to connect, so checking
-    `get_client() is not None` would lie — and a broadcast started against a bot
-    that is not online would burn its queue with failures.
+    A client object exists from the first moment we try to connect, and the stored
+    bot id survives a network disconnect. Check both so campaigns remain queued
+    rather than starting against a client that cannot send.
     """
-    return _client is not None and bool(bot_id)
+    if _client is None or not bot_id:
+        return False
+    try:
+        return bool(_client.is_connected())
+    except Exception:
+        return False
 
 
 def is_online(admin_id: int) -> bool:

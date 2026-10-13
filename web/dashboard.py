@@ -9,7 +9,7 @@ One FastAPI app, two halves:
         /search?q=        search free content
         /health           JSON health check for uptime monitors
 
-    Admin   (login with WEB_USER / WEB_PASS — cookie, HTTP-Basic also accepted)
+    Admin   (login at /admin with WEB_PASS — password form + HttpOnly cookie)
         /admin                    dashboard: users, views, revenue, alerts
         /admin/broadcast          📢 broadcast studio (create + history + live progress)
         /admin/broadcast/<id>     live progress of one campaign
@@ -36,6 +36,7 @@ import re
 import secrets
 import sys
 import time
+from math import ceil
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
@@ -79,9 +80,20 @@ def _panel_password() -> str:
     return generated
 
 
+def _panel_secret() -> str:
+    """Use an independent signing key so a short login password cannot forge cookies."""
+    if cfg.WEB_SECRET:
+        return cfg.WEB_SECRET
+    saved = db.get_meta("web_generated_secret", "")
+    if not saved:
+        saved = secrets.token_urlsafe(32)
+        db.set_meta("web_generated_secret", saved)
+    return saved
+
+
 def _session_token() -> str:
-    secret = cfg.WEB_SECRET or _panel_password()
-    raw = f"{cfg.WEB_USER}:{secret}".encode("utf-8")
+    secret = _panel_secret()
+    raw = b"bfix-admin-session-v1"
     return hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
 
@@ -94,23 +106,37 @@ def _cookie_ok(request: Request) -> bool:
     return bool(cookie) and _secure_equal(cookie, _session_token())
 
 
-def _basic_ok(request: Request) -> bool:
-    header = request.headers.get("Authorization")
-    if not header or not header.startswith("Basic "):
-        return False
-    import base64
-    try:
-        decoded = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
-        user, _, password = decoded.partition(":")
-    except Exception:
-        return False
-    return (_secure_equal(user, cfg.WEB_USER)
-            and _secure_equal(password, _panel_password()))
-
-
 def _authed(request: Request) -> bool:
-    """Admin-only pages require a signed cookie or valid HTTP Basic credentials."""
-    return _cookie_ok(request) or _basic_ok(request)
+    """Admin-only pages accept the signed, HttpOnly browser session cookie."""
+    return _cookie_ok(request)
+
+
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_WINDOW_SECONDS = 15 * 60
+
+
+def _login_key(request: Request) -> str:
+    """Rate-limit the password form by the address seen by the ASGI server."""
+    return request.client.host if request.client else "unknown"
+
+
+def _login_retry_after(key: str, now: float | None = None) -> int:
+    now = time.monotonic() if now is None else now
+    attempts = [stamp for stamp in _LOGIN_FAILURES.get(key, [])
+                if now - stamp < _LOGIN_WINDOW_SECONDS]
+    if attempts:
+        _LOGIN_FAILURES[key] = attempts
+    else:
+        _LOGIN_FAILURES.pop(key, None)
+    if len(attempts) < _LOGIN_MAX_FAILURES:
+        return 0
+    return max(1, ceil(_LOGIN_WINDOW_SECONDS - (now - attempts[0])))
+
+
+def _record_login_failure(key: str, now: float | None = None) -> None:
+    _login_retry_after(key, now)
+    _LOGIN_FAILURES.setdefault(key, []).append(time.monotonic() if now is None else now)
 
 
 def deep_link(payload: str) -> str:
@@ -401,13 +427,10 @@ def layout(title: str, body: str, active: str = "", admin: bool = False,
         pub = (("/", "🏪 স্টোর"), ("/search", "🔍 সার্চ"), ("/help", "❓ সাহায্য"))
         nav = "".join(f'<a class="{"on" if href == active else ""}" href="{href}">{label}</a>'
                       for href, label in pub)
-        admin_href = "admin"
-        admin_label = "Dashboard" if admin else "Admin sign in"
         page = f"""{head}<body>
 <header>
   <h1><span class="logo">◈</span>{brand}</h1>
   <nav class="top">{nav}</nav>
-  <a class="btn" href="{admin_href}">{admin_label}</a>
 </header>
 <main>{body}</main>
 <footer>Telegram store bot · ফাইল বট নিজেই পাঠায়</footer>
@@ -748,29 +771,38 @@ def create_app() -> FastAPI:
         return await login_form()
 
     async def login_form(error: str = "") -> str:
-        note = '<div class="warnbox">ইউজারনেম বা পাসওয়ার্ড মেলেনি। আবার চেষ্টা করুন।</div>' if error else ""
+        if error == "locked":
+            note = '<div class="warnbox">অনেকবার ভুল পাসওয়ার্ড দেওয়া হয়েছে। কিছুক্ষণ পরে আবার চেষ্টা করুন।</div>'
+        elif error:
+            note = '<div class="warnbox">পাসওয়ার্ড মেলেনি। আবার চেষ্টা করুন।</div>'
+        else:
+            note = ""
         body = f"""
         {note}
         <div class="card" style="max-width:440px;margin:40px auto">
           <p class="eyebrow">ADMIN WORKSPACE</p>
           <h2>Sign in</h2>
-          <p class="muted">আপনার dashboard-এ প্রবেশ করতে লগইন করুন।</p>
+          <p class="muted">আপনার dashboard-এ প্রবেশ করতে পাসওয়ার্ড দিন।</p>
           <form method=post action=/admin/login>
-            <label>Username</label><input name=username value="{esc(cfg.WEB_USER)}" autocomplete=username required>
-            <label>Password</label><input name=password type=password autocomplete=current-password required>
+            <label>Admin password</label>
+            <input name=password type=password inputmode=numeric autocomplete=current-password required autofocus>
             <button type=submit>Continue</button>
           </form>
-          <p class="muted">পাসওয়ার্ড <code>WEB_PASS</code> থেকে আসে। সেট না থাকলে server log-এ
-          একবারের জন্য নিরাপদ পাসওয়ার্ড তৈরি হয়।</p>
         </div>"""
         return layout("Sign in", body, "", admin=False)
 
     @app.post("/admin/login")
-    async def login(request: Request, username: str = Form(""), password: str = Form("")):
-        good_user = _secure_equal((username or "").strip(), cfg.WEB_USER)
+    async def login(request: Request, password: str = Form("")):
+        source = _login_key(request)
+        retry_after = _login_retry_after(source)
+        if retry_after:
+            return HTMLResponse(await login_form("locked"), status_code=429,
+                                headers={"Retry-After": str(retry_after)})
         good_pass = _secure_equal(password or "", _panel_password())
-        if not (good_user and good_pass):
+        if not good_pass:
+            _record_login_failure(source)
             return HTMLResponse(await login_form("1"), status_code=401)
+        _LOGIN_FAILURES.pop(source, None)
         response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(
             COOKIE_NAME, _session_token(), max_age=max(3600, cfg.WEB_SESSION_HOURS * 3600),
@@ -791,8 +823,7 @@ def create_app() -> FastAPI:
         if _authed(request):
             return None
         if request.headers.get("Authorization"):
-            return Response("Unauthorized", status_code=401,
-                            headers={"WWW-Authenticate": 'Basic realm="store-admin"'})
+            return Response("Unauthorized", status_code=401)
         return RedirectResponse("/admin/login", status_code=303)
 
     # -------------------------------------------------------- Telegram session
@@ -1091,8 +1122,12 @@ def create_app() -> FastAPI:
         note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
         warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
         bot_ready = runtime.bot_online()
+        queue_warning = ("" if bot_ready else
+                         '<div class="warnbox">বট সংযুক্ত নয়—এখন পাঠালে campaign শুধু কিউতে থাকবে। '
+                         'Telegram bot worker চালু করতে <a href="/setup">Bot connection</a> দেখুন; '
+                         'production start command হিসেবে <code>python run.py</code> ব্যবহার করুন।</div>')
         body = f"""
-        {note}{warnbox}
+        {note}{warnbox}{queue_warning}
         <h3>📢 ব্রডকাস্ট স্টুডিও</h3>
         <p class="muted">অডিয়েন্স বাছুন, মেসেজ লিখুন (বা একটি ভিডিও/ফাইল বেছে নিন) — কিউ
         ডেটাবেজে থাকে, তাই বট রিস্টার্ট হলেও ব্রডকাস্ট থেমে যায় না।
@@ -1138,6 +1173,9 @@ def create_app() -> FastAPI:
         blocked = _guard(request)
         if blocked:
             return blocked
+        action = (action or "start").strip().lower()
+        if action not in {"start", "draft", "test"}:
+            return RedirectResponse("/admin/broadcast?warn=অজানা+ক্যাম্পেইন+অ্যাকশন", status_code=303)
         body = (text or "").strip()
         files = [file_id] if file_id else []
         if not body and not files:
@@ -1147,10 +1185,9 @@ def create_app() -> FastAPI:
         if not targets:
             return RedirectResponse("/admin/broadcast?warn=এই+অডিয়েন্সে+কেউ+নেই", status_code=303)
         owner = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
-        # status "queued": it starts now when the bot is online, otherwise the
-        # scheduler starts it the moment the bot connects.
+        # Tests and drafts are always non-sendable until an admin explicitly starts them.
         campaign = broadcast.create_campaign(owner, text=body, audience=audience,
-                                            files=files, start=(action != "draft"),
+                                            files=files, start=(action == "start"),
                                             buttons=buttons,
                                             online_button=1 if online else 0)
         campaign_id = campaign["id"]
@@ -1194,6 +1231,20 @@ def create_app() -> FastAPI:
         progress = broadcast.campaign_progress(campaign_id)
         note = f'<div class="flash">{esc(flash)}</div>' if flash else ""
         warnbox = f'<div class="warnbox">{esc(warn)}</div>' if warn else ""
+        if campaign["status"] == broadcast.RUNNING and progress.get("flood_wait"):
+            queue_diagnostic = f"Telegram rate limit: {progress['flood_wait']} — worker অপেক্ষা করছে।"
+        elif campaign["status"] == broadcast.QUEUED and not progress["bot_online"]:
+            queue_diagnostic = "বট অফলাইন। কিউ সেভ আছে; Telegram bot online হলেই পাঠানো শুরু হবে।"
+        elif campaign["status"] == broadcast.QUEUED:
+            queue_diagnostic = "বট অনলাইন—worker কিউ নিচ্ছে। কয়েক সেকেন্ড পরেও queued থাকলে System health/Activity logs দেখুন।"
+        elif campaign["status"] == broadcast.RUNNING and not progress["running"]:
+            resume_note = "Auto-resume বন্ধ" if not progress["auto_resume"] else "Auto-resume চালু"
+            queue_diagnostic = (f"ক্যাম্পেইন running দেখাচ্ছে কিন্তু active worker নেই ({resume_note})। "
+                                "Send now চাপলে pending item থেকে আবার শুরু হবে।")
+        elif campaign["status"] == broadcast.FAILED:
+            queue_diagnostic = campaign.get("last_error") or "Worker থেমে গেছে; error নিচে কিউ-তে দেখুন।"
+        else:
+            queue_diagnostic = campaign.get("last_error") or "ক্যাম্পেইনের অবস্থা স্বয়ংক্রিয়ভাবে আপডেট হবে।"
         items = db.campaign_items(campaign_id, limit=200)
         sample_rows = []
         for item in items[:60]:
@@ -1230,10 +1281,11 @@ def create_app() -> FastAPI:
         {note}{warnbox}
         <h3>📢 ক্যাম্পেইন #{campaign_id}</h3>
         <div class="grid">
-          {card("Status", campaign['status'])} {card("Total", counts['total'])}
+          {card("Status", f'<span data-campaign-status>{esc(campaign["status"])}</span>')} {card("Total", counts['total'])}
           {card("Sent", counts['sent'])} {card("Failed", counts['failed'])}
           {card("Blocked", counts['blocked'])} {card("Pending", counts['pending'])}
         </div>
+        <p class="muted" data-campaign-diagnostic>{esc(queue_diagnostic)}</p>
         <div class="bar" style="margin:14px 0"><i style="width:{progress['percent']}%"></i></div>
         <p class="muted">Audience: {esc(broadcast.audience_label(campaign['audience']))} ·
         Created {_start(campaign['created_at'])} ·
@@ -1251,20 +1303,38 @@ def create_app() -> FastAPI:
         <table><tr><th>ইউজার</th><th>অবস্থা</th><th>কারণ / নোট</th></tr>{sample or "<tr><td colspan=3 class=muted>খালি</td></tr>"}</table>
         <script>
           const bar = document.querySelector('.bar > i');
+          const statusEl = document.querySelector('[data-campaign-status]');
+          const diagnosticEl = document.querySelector('[data-campaign-diagnostic]');
+          const cards = document.querySelectorAll('.card .n');
+          let timer;
           async function tick() {{
             try {{
-              const r = await fetch('admin/api/campaign/{campaign_id}');
+              const r = await fetch('admin/api/campaign/{campaign_id}', {{cache:'no-store'}});
+              if (!r.ok) throw new Error('status ' + r.status);
               const d = await r.json();
               if (bar) bar.style.width = d.percent + '%';
-              document.querySelectorAll('.card .n')[1].textContent = d.total;
-              document.querySelectorAll('.card .n')[2].textContent = d.sent;
-              document.querySelectorAll('.card .n')[3].textContent = d.failed;
-              document.querySelectorAll('.card .n')[4].textContent = d.blocked;
-              document.querySelectorAll('.card .n')[5].textContent = d.pending;
-              if (!d.running) {{ clearInterval(timer); }}
-            }} catch (e) {{}}
+              if (statusEl) statusEl.textContent = d.status || 'unknown';
+              if (cards[1]) cards[1].textContent = d.total;
+              if (cards[2]) cards[2].textContent = d.sent;
+              if (cards[3]) cards[3].textContent = d.failed;
+              if (cards[4]) cards[4].textContent = d.blocked;
+              if (cards[5]) cards[5].textContent = d.pending;
+              if (diagnosticEl) {{
+                const message = d.flood_wait ? 'Telegram rate limit: ' + d.flood_wait + ' — worker is waiting safely.' :
+                  d.last_error ||
+                  (d.status === 'queued' && !d.bot_online ? 'Bot offline — campaign is safely queued.' :
+                   d.status === 'queued' ? 'Bot online — waiting for the queue worker.' :
+                   d.status === 'running' && !d.running ? (d.auto_resume ? 'Interrupted worker; use Send now to resume pending recipients.' : 'Auto-resume is off; use Send now to resume pending recipients.') :
+                   'Campaign status is updating automatically.');
+                diagnosticEl.textContent = message;
+              }}
+              if (!d.active) return;
+              timer = setTimeout(tick, d.status === 'queued' && !d.bot_online ? 15000 : 5000);
+            }} catch (e) {{
+              timer = setTimeout(tick, 15000);
+            }}
           }}
-          const timer = setInterval(tick, 3000);
+          tick();
         </script>
         """
         return layout(f"Campaign {campaign_id}", body, "/admin/broadcast")
@@ -1274,14 +1344,20 @@ def create_app() -> FastAPI:
         blocked = _guard(request)
         if blocked:
             return blocked
+        campaign = db.campaign(campaign_id)
+        if campaign is None:
+            return RedirectResponse("/admin/broadcast?warn=ক্যাম্পেইন+পাওয়া+যায়নি", status_code=303)
         if not runtime.bot_online():
-            # Queue it (not “draft”) so the scheduler starts it by itself the
-            # moment the bot signs in — that is what the message promises.
-            db.update_campaign(campaign_id, status=broadcast.QUEUED)
+            # Explicitly queued campaigns always resume when Telegram comes online.
+            db.update_campaign(campaign_id, status=broadcast.QUEUED,
+                               scheduled_at=None, finished_at=None,
+                               last_error="Waiting for the Telegram bot to come online.")
             return RedirectResponse(
-                f"/admin/broadcast/{campaign_id}?warn=বট+অফলাইন+—+অনলাইন+হলেই+অটো+শুরু+হবে",
+                f"/admin/broadcast/{campaign_id}?warn=বট+অফলাইন+—+কিউতে+রাখা+হয়েছে",
                 status_code=303)
         db.rearm_campaign_items(campaign_id, ("failed",))
+        db.update_campaign(campaign_id, status=broadcast.QUEUED,
+                           scheduled_at=None, finished_at=None, last_error="")
         db.campaign_counts(campaign_id)
         broadcast.start_campaign(campaign_id)
         return RedirectResponse(f"/admin/broadcast/{campaign_id}?flash=🚀+শুরু+হয়েছে",
@@ -1301,12 +1377,31 @@ def create_app() -> FastAPI:
         blocked = _guard(request)
         if blocked:
             return blocked
-        rearmed = db.rearm_campaign_items(campaign_id, ("failed", "blocked"))
-        db.campaign_counts(campaign_id)
-        if runtime.bot_online() and rearmed:
-            broadcast.start_campaign(campaign_id)
+        campaign = db.campaign(campaign_id)
+        if campaign is None:
+            return RedirectResponse("/admin/broadcast?warn=ক্যাম্পেইন+পাওয়া+যায়নি", status_code=303)
+        # Blocked recipients are not blindly retried; Telegram will reject them
+        # until they restart the bot. Preserve their blocked state for a clear report.
+        rearmed = db.rearm_campaign_items(campaign_id, ("failed",))
+        counts = db.campaign_counts(campaign_id)
+        pending = counts["pending"]
+        if rearmed or pending:
+            if runtime.bot_online():
+                db.update_campaign(campaign_id, status=broadcast.QUEUED,
+                                   finished_at=None, last_error="")
+                broadcast.start_campaign(campaign_id)
+            else:
+                db.update_campaign(campaign_id, status=broadcast.QUEUED,
+                                   finished_at=None,
+                                   last_error="Waiting for the Telegram bot to come online.")
+        if not (rearmed or pending):
+            note = "কোনো+ফেইল+বা+pending+recipient+নেই;+blocked+ইউজার+বট+আবার+start+না+করা+পর্যন্ত+বাদ"
+        elif runtime.bot_online():
+            note = f"🔁+{rearmed}+টি+ফেইল,+{pending}+টি+pending+কিউতে+চালু"
+        else:
+            note = f"🔁+{rearmed}+টি+ফেইল,+{pending}+টি+pending+কিউতে;+বট+অনলাইন+হলে+শুরু+হবে"
         return RedirectResponse(
-            f"/admin/broadcast/{campaign_id}?flash=🔁+{rearmed}+জনকে+আবার", status_code=303)
+            f"/admin/broadcast/{campaign_id}?flash={note}", status_code=303)
 
     @app.post("/admin/broadcast/{campaign_id}/test")
     async def studio_test(request: Request, campaign_id: int):
@@ -1588,6 +1683,7 @@ def create_app() -> FastAPI:
             <div class="row">
               <button class="ok" name=action value=start>🚀 শুরু করুন</button>
               <button class="warn" name=action value=test>🧪 আমাকে টেস্ট পাঠান</button>
+              <button class="grey" name=action value=draft>📝 খসড়া রাখুন</button>
               <a class="btn grey" href="/admin/broadcast">📢 পুরো স্টুডিও</a>
             </div>
           </form>
@@ -1606,22 +1702,36 @@ def create_app() -> FastAPI:
             return RedirectResponse("/admin/files?flash=ফাইল+নেই", status_code=303)
         if not broadcast.resolve_audience(0, audience):
             return RedirectResponse("/admin/files?flash=এই+অডিয়েন্সে+কেউ+নেই", status_code=303)
+        action = (action or "start").strip().lower()
+        if action not in {"start", "draft", "test"}:
+            return RedirectResponse("/admin/files?flash=অজানা+ক্যাম্পেইন+অ্যাকশন", status_code=303)
         owner = cfg.ADMIN_IDS[0] if cfg.ADMIN_IDS else 0
         campaign = broadcast.create_campaign(
             owner, text=(text or "").strip(), title=file_row["name"][:40],
-            audience=audience, files=[file_id], start=True,
+            audience=audience, files=[file_id], start=(action == "start"),
             buttons=buttons.strip(), online_button=1 if online else 0)
+        campaign_id = campaign["id"]
+        if action == "draft":
+            return RedirectResponse(f"/admin/broadcast/{campaign_id}?flash=📝+খসড়া+সেভ+হয়েছে",
+                                    status_code=303)
         if action == "test":
-            if cfg.ADMIN_IDS:
-                await broadcast.test_send(campaign["id"], [cfg.ADMIN_IDS[0]])
-            return RedirectResponse(f"/admin/broadcast/{campaign['id']}?flash=🧪+টেস্ট+পাঠানো+হয়েছে",
+            if not cfg.ADMIN_IDS or not runtime.bot_online():
+                return RedirectResponse(
+                    f"/admin/broadcast/{campaign_id}?warn=বট+অনলাইন+নয়—টেস্ট+পাঠানো+যায়নি",
+                    status_code=303)
+            result = await broadcast.test_send(campaign_id, [cfg.ADMIN_IDS[0]])
+            if not result.get("ok"):
+                detail = (result.get("errors") or ["Test send failed"])[0]
+                return RedirectResponse(
+                    f"/admin/broadcast/{campaign_id}?warn={quote_plus(detail)}", status_code=303)
+            return RedirectResponse(f"/admin/broadcast/{campaign_id}?flash=🧪+টেস্ট+পাঠানো+হয়েছে",
                                     status_code=303)
         if runtime.bot_online():
-            broadcast.start_campaign(campaign["id"])
-            return RedirectResponse(f"/admin/broadcast/{campaign['id']}?flash=🚀+শুরু+হয়েছে",
+            broadcast.start_campaign(campaign_id)
+            return RedirectResponse(f"/admin/broadcast/{campaign_id}?flash=🚀+শুরু+হয়েছে",
                                     status_code=303)
         return RedirectResponse(
-            f"/admin/broadcast/{campaign['id']}?warn=বট+অফলাইন+—+অনলাইন+হলেই+অটো+শুরু+হবে",
+            f"/admin/broadcast/{campaign_id}?warn=বট+অফলাইন+—+কিউতে+রাখা+হয়েছে",
             status_code=303)
 
     @app.get("/admin/files/delete/{file_id}")
@@ -2499,7 +2609,7 @@ def main() -> int:
     if not cfg.WEB_PASS:
         log.warning("WEB_PASS is not set — a temporary password was generated (see above).")
     import uvicorn
-    log.info("Website on http://%s:%s (admin user %s)", cfg.WEB_HOST, cfg.WEB_PORT, cfg.WEB_USER)
+    log.info("Website on http://%s:%s (admin panel uses WEB_PASS)", cfg.WEB_HOST, cfg.WEB_PORT)
     uvicorn.run(app, host=cfg.WEB_HOST, port=cfg.WEB_PORT, log_level="info")
     return 0
 

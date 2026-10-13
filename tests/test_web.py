@@ -30,10 +30,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "API_HASH", "0" * 32)
     monkeypatch.setattr(cfg, "WEB_TITLE", "Test Store")
     import web.dashboard as dashboard
+    dashboard._LOGIN_FAILURES.clear()
     return TestClient(dashboard.app)
 
 
 def _auth(user="admin", password="secret") -> dict:
+    from web.dashboard import COOKIE_NAME, _session_token
+    if user == "admin" and password == "secret":
+        return {"Cookie": f"{COOKIE_NAME}={_session_token()}"}
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return {"Authorization": f"Basic {token}"}
 
@@ -79,23 +83,47 @@ def test_admin_panel_requires_valid_credentials(client):
     response = client.get("/admin", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/login"
-    assert client.get("/admin/login", follow_redirects=False).status_code == 200
+    login_page = client.get("/admin/login", follow_redirects=False)
+    assert login_page.status_code == 200
+    assert "Admin password" in login_page.text
+    assert "Username" not in login_page.text
+    assert "name=username" not in login_page.text
     assert client.get("/admin", headers=_auth("admin", "wrong")).status_code == 401
     assert client.get("/admin", headers=_auth()).status_code == 200
 
 
+def test_public_site_hides_admin_entry_but_direct_admin_path_is_protected(client):
+    public = client.get("/")
+    assert "Admin sign in" not in public.text
+    assert 'href="admin"' not in public.text
+    response = client.get("/admin", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"
+
+
 def test_login_form_rejects_bad_password_and_sets_secure_cookie(client):
-    invalid = client.post("/admin/login", data={"username": "x", "password": "y"},
+    invalid = client.post("/admin/login", data={"password": "wrong"},
                           follow_redirects=False)
     assert invalid.status_code == 401
 
-    response = client.post("/admin/login", data={"username": "admin", "password": "secret"},
+    response = client.post("/admin/login", data={"password": "secret"},
                            follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/admin"
     cookie = response.headers["set-cookie"]
     assert "HttpOnly" in cookie and "SameSite=strict" in cookie
     assert client.get("/admin", follow_redirects=False).status_code == 200
+
+
+def test_login_throttles_repeated_wrong_passwords(client):
+    for _ in range(5):
+        response = client.post("/admin/login", data={"password": "wrong"},
+                               follow_redirects=False)
+        assert response.status_code == 401
+    locked = client.post("/admin/login", data={"password": "secret"},
+                         follow_redirects=False)
+    assert locked.status_code == 429
+    assert int(locked.headers["retry-after"]) > 0
 
 
 def test_telegram_session_page_requires_admin_and_never_renders_session_string(client):
@@ -222,6 +250,52 @@ def test_campaign_start_without_bot_stays_queued(client, monkeypatch):
     assert db.campaign_counts(campaign["id"])["pending"] > 0
 
 
+def test_studio_test_send_never_queues_the_full_audience(client, monkeypatch):
+    from app import runtime
+    _store()
+    db.touch_user(USER_ID, "Buyer", "buyer")
+    monkeypatch.setattr(runtime, "bot_online", lambda: True)
+    calls = []
+
+    async def fake_test(campaign_id, admin_ids):
+        calls.append((campaign_id, admin_ids))
+        return {"ok": True, "sent": 1, "failed": 0, "errors": []}
+
+    monkeypatch.setattr(broadcast, "test_send", fake_test)
+    response = client.post("/admin/broadcast/new",
+                           data={"audience": "all", "file_id": 0, "text": "preview only",
+                                 "action": "test"},
+                           headers=_auth(), follow_redirects=False)
+    assert response.status_code == 303
+    campaign = db.campaigns(limit=1)[0]
+    assert campaign["status"] == "draft"
+    assert not db.queued_campaigns()
+    assert calls == [(campaign["id"], [ADMIN_ID])]
+
+
+def test_file_broadcast_test_send_never_queues_the_full_audience(client, monkeypatch):
+    from app import runtime
+    store = _store()
+    file_id = db.files_of(store["id"])[0]["id"]
+    db.touch_user(USER_ID, "Buyer", "buyer")
+    monkeypatch.setattr(runtime, "bot_online", lambda: True)
+    calls = []
+
+    async def fake_test(campaign_id, admin_ids):
+        calls.append((campaign_id, admin_ids))
+        return {"ok": True, "sent": 1, "failed": 0, "errors": []}
+
+    monkeypatch.setattr(broadcast, "test_send", fake_test)
+    response = client.post(f"/admin/files/broadcast/{file_id}",
+                           data={"audience": "all", "action": "test"},
+                           headers=_auth(), follow_redirects=False)
+    assert response.status_code == 303
+    campaign = db.campaigns(limit=1)[0]
+    assert campaign["status"] == "draft"
+    assert not db.queued_campaigns()
+    assert calls == [(campaign["id"], [ADMIN_ID])]
+
+
 def test_campaign_progress_api(client):
     _store()
     db.touch_user(USER_ID, "Buyer", "buyer")
@@ -230,7 +304,24 @@ def test_campaign_progress_api(client):
     data = client.get(f"/admin/api/campaign/{campaign['id']}", headers=_auth()).json()
     assert data["total"] == 1
     assert data["percent"] == 0
+    assert data["status"] == broadcast.QUEUED
+    assert data["active"] is True
     assert data["running"] is False
+    assert data["bot_online"] is False
+
+
+def test_queued_campaign_page_explains_why_it_is_waiting(client, monkeypatch):
+    from app import runtime
+    _store()
+    db.touch_user(USER_ID, "Buyer", "buyer")
+    campaign = broadcast.create_campaign(ADMIN_ID, text="hi", audience="all")
+    monkeypatch.setattr(runtime, "bot_online", lambda: False)
+
+    page = client.get(f"/admin/broadcast/{campaign['id']}", headers=_auth())
+    assert page.status_code == 200
+    assert "বট অফলাইন" in page.text
+    assert "data-campaign-status" in page.text
+    assert "setTimeout(tick" in page.text
 
 
 def test_file_broadcast_from_the_panel(client):
@@ -246,7 +337,7 @@ def test_file_broadcast_from_the_panel(client):
     assert response.status_code == 303
     campaign = db.campaigns(limit=1)[0]
     assert campaign["file_ids"] == [file_id]
-    assert campaign["status"] in ("queued", "running")
+    assert campaign["status"] == "draft"
     assert db.campaign_counts(campaign["id"])["total"] >= 1
 
 
@@ -277,6 +368,22 @@ def test_users_page_search(client):
     db.touch_user(USER_ID, "Karim Uddin", "karim")
     page = client.get("/admin/users?q=karim", headers=_auth()).text
     assert "Karim" in page
+
+
+def test_retry_queues_failed_campaign_when_the_bot_is_offline(client, monkeypatch):
+    from app import runtime
+    _store()
+    db.touch_user(USER_ID, "Buyer", "buyer")
+    campaign = broadcast.create_campaign(ADMIN_ID, text="hi", audience="all")
+    db.mark_campaign_item(campaign["id"], USER_ID, "failed", "temporary network error")
+    db.update_campaign(campaign["id"], status=broadcast.FAILED)
+    monkeypatch.setattr(runtime, "bot_online", lambda: False)
+
+    response = client.post(f"/admin/broadcast/{campaign['id']}/retry",
+                           headers=_auth(), follow_redirects=False)
+    assert response.status_code == 303
+    assert db.campaign(campaign["id"])["status"] == broadcast.QUEUED
+    assert db.campaign_counts(campaign["id"])["pending"] == 1
 
 
 def test_start_button_queues_the_campaign_while_the_bot_is_offline(client, monkeypatch):
@@ -575,12 +682,16 @@ def test_campaign_buttons_can_be_turned_off_per_campaign(client):
 
 
 # ------------------------------------------------- 🔐 security / 📝 bot texts / 🗑 purge
-def test_security_page_shows_the_leaked_file_and_the_fix(client):
-    """The owner pasted a crash log that leaked API_HASH — the panel must say so."""
+def test_security_page_matches_the_repo_scan_and_shows_the_fix(client):
+    """The report lists only current scanner findings and never prints full values."""
+    from app.services import secrets_guard
+    report = secrets_guard.audit()
     page = client.get("/admin/security", headers=_auth())
     assert page.status_code == 200
     assert "নিরাপত্তা" in page.text
-    assert "website.example.py" in page.text          # the real finding, on line 71
+    for finding in report["repo_files"]:
+        assert finding["file"] in page.text
+        assert finding["preview"] in page.text
     assert "Revoke" in page.text                      # step one of the fix
     assert "API_HASH" in page.text
 

@@ -246,8 +246,11 @@ async def campaign_loop() -> None:
     while True:
         try:
             if runtime.bot_online():
-                if settings.get_bool("BROADCAST_AUTO_RESUME", True):
-                    broadcast.resume_unfinished()
+                # Explicitly queued campaigns have already been approved by the
+                # admin, so they always start once Telegram is online. The setting
+                # only controls interrupted `running` campaigns after a restart.
+                broadcast.resume_unfinished(
+                    include_running=settings.get_bool("BROADCAST_AUTO_RESUME", True))
                 for campaign in db.due_campaigns():
                     if broadcast.is_running(campaign["id"]):
                         continue

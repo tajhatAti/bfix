@@ -232,12 +232,16 @@ async def _send_to_user(campaign: dict, user_id: int) -> str:
                 raise RuntimeError("ফাইলটি মুছে ফেলা হয়েছে")
             probe = await deliver_file_id(user_id, chosen[0], body, buttons=buttons)
             if not probe.ok:
-                # `blocked` here means the *recipient* is unreachable, not that the
-                # file is broken — keep the real wording so the queue explains it.
+                # `blocked` means the recipient is unreachable; preserve the detail
+                # so the queue can explain what happened and offer a useful retry.
                 raise RuntimeError(f"{probe.reason}: {probe.detail or 'media unavailable'}")
+            # The fallback already delivered file zero to this recipient. Do not
+            # send it again in the normal loop below.
+            sent = 1
+        else:
+            sent = 0
 
-        sent = 0
-        for index, file_id in enumerate(chosen):
+        for index, file_id in enumerate(chosen[sent:], start=sent):
             caption = body if index == 0 else (runtime_caption() or "")
             result = await deliver_file_id(user_id, file_id, caption, buttons=buttons)
             if not result.ok:
@@ -371,20 +375,21 @@ async def run_campaign(campaign_id: int, progress: ProgressCb | None = None,
     pending = db.campaign_user_ids(campaign_id, "pending")
     db.update_campaign(campaign_id, status=RUNNING,
                        started_at=campaign.get("started_at") or time.time(),
-                       last_error="")
+                       finished_at=None, last_error="")
     log.info("Campaign #%s started: %s pending of %s", campaign_id, len(pending), total)
-    # Keep known blockers across campaigns; a /start event clears the cache if they return.
 
     started = time.time()
     already_done = counts["done"]
     index = 0
     failed_here = 0
+    last_error = ""
+    retry_blocked = settings.get_bool("BROADCAST_TO_BLOCKED", False)
 
     for user_id in pending:
         if is_cancelled(campaign_id):
             break
         index += 1
-        if user_id in blocked_users:
+        if user_id in blocked_users and not retry_blocked:
             db.mark_campaign_item(campaign_id, user_id, "blocked", "known blocker")
         else:
             try:
@@ -392,16 +397,22 @@ async def run_campaign(campaign_id: int, progress: ProgressCb | None = None,
                 db.mark_campaign_item(campaign_id, user_id, "sent")
             except FloodWaitError as exc:
                 # safe_call already waits; this is the "safety cap" escape hatch.
-                db.mark_campaign_item(campaign_id, user_id, "failed", f"flood {exc.seconds}s")
+                detail = f"flood {exc.seconds}s"
+                db.mark_campaign_item(campaign_id, user_id, "failed", detail)
                 failed_here += 1
+                last_error = f"{user_id}: {detail}"
+                log.warning("Campaign #%s failed for %s: %s", campaign_id, user_id, detail)
             except Exception as exc:
                 kind = _classify(exc)
                 if kind == "blocked":
                     blocked_users.add(user_id)
                 else:
                     failed_here += 1
-                db.mark_campaign_item(campaign_id, user_id, kind, str(exc))
-                log.debug("campaign #%s → %s %s", campaign_id, user_id, kind)
+                    last_error = f"{user_id}: {exc}"
+                detail = str(exc)[:200]
+                db.mark_campaign_item(campaign_id, user_id, kind, detail)
+                log.warning("Campaign #%s → %s for %s: %s",
+                            campaign_id, kind, user_id, detail)
 
         if index == 1:
             db.log_event("broadcast_start", None, None, None, str(campaign_id),
@@ -416,7 +427,8 @@ async def run_campaign(campaign_id: int, progress: ProgressCb | None = None,
     cancelled = is_cancelled(campaign_id)
     status = CANCELLED if cancelled else (DONE if live["pending"] == 0 else FAILED)
     duration = time.time() - started
-    db.update_campaign(campaign_id, status=status, finished_at=time.time())
+    db.update_campaign(campaign_id, status=status, finished_at=time.time(),
+                       last_error=last_error[:200])
     _cancel.discard(campaign_id)
 
     result = {
@@ -432,12 +444,57 @@ async def run_campaign(campaign_id: int, progress: ProgressCb | None = None,
     return result
 
 
+async def _run_campaign_guarded(campaign_id: int, progress: ProgressCb | None,
+                                notify_admin: bool) -> dict:
+    """Make background failures visible instead of leaving a campaign stuck running."""
+    try:
+        return await run_campaign(campaign_id, progress=progress,
+                                  notify_admin=notify_admin)
+    except asyncio.CancelledError:
+        try:
+            db.update_campaign(campaign_id, status=QUEUED, finished_at=None,
+                               last_error="Worker stopped; pending recipients are queued to resume.")
+        except Exception:
+            log.exception("Could not requeue cancelled campaign #%s", campaign_id)
+        raise
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"[:300]
+        log.exception("Campaign #%s worker crashed: %s", campaign_id, detail)
+        try:
+            db.update_campaign(campaign_id, status=FAILED,
+                               finished_at=time.time(), last_error=detail)
+        except Exception:
+            log.exception("Could not mark campaign #%s as failed", campaign_id)
+        campaign = db.campaign(campaign_id) or {}
+        if notify_admin and campaign.get("admin_id"):
+            try:
+                counts = db.campaign_counts(campaign_id, sync=False)
+            except Exception:
+                counts = {}
+            await notify_owner(campaign, {
+                "campaign_id": campaign_id, "status": FAILED,
+                "sent": counts.get("sent", 0), "failed": counts.get("failed", 0),
+                "blocked": counts.get("blocked", 0), "pending": counts.get("pending", 0),
+                "duration": 0, "error": detail,
+            })
+        return {"ok": False, "campaign_id": campaign_id, "status": FAILED,
+                "error": detail}
+
+
 def start_campaign(campaign_id: int, progress: ProgressCb | None = None,
                    notify_admin: bool = True) -> asyncio.Task:
     """Run a campaign in the background (never blocks the handler)."""
-    task = spawn(run_campaign(campaign_id, progress=progress, notify_admin=notify_admin))
+    current = _runners.get(campaign_id)
+    if current is not None and not current.done():
+        return current
+    task = spawn(_run_campaign_guarded(campaign_id, progress, notify_admin))
     _runners[campaign_id] = task
-    task.add_done_callback(lambda _t: _runners.pop(campaign_id, None))
+
+    def forget(done: asyncio.Task) -> None:
+        if _runners.get(campaign_id) is done:
+            _runners.pop(campaign_id, None)
+
+    task.add_done_callback(forget)
     return task
 
 
@@ -516,11 +573,13 @@ async def test_send_text(text: str, buttons: str = "", user_id: int | None = Non
     return ok
 
 
-def resume_unfinished() -> int:
-    """Restart campaigns that were interrupted (called at boot / by scheduler)."""
+def resume_unfinished(*, include_running: bool = True) -> int:
+    """Start approved queued campaigns; optionally resume interrupted running ones."""
     resumed = 0
     for campaign in db.queued_campaigns():
         if is_running(campaign["id"]):
+            continue
+        if campaign["status"] == RUNNING and not include_running:
             continue
         start_campaign(campaign["id"])
         resumed += 1
@@ -538,10 +597,19 @@ def campaign_progress(campaign_id: int) -> dict:
     done = counts["done"]
     total = counts["total"] or 1
     percent = int(done * 100 / total) if total else 0
+    from app import runtime
+    from app.services.telegram import flood_status
+    worker_active = is_running(campaign_id)
+    status = campaign["status"]
     return {
         "id": campaign_id,
-        "status": campaign["status"],
-        "running": is_running(campaign_id),
+        "status": status,
+        "running": worker_active,
+        "active": worker_active or status == QUEUED,
+        "bot_online": runtime.bot_online(),
+        "auto_resume": settings.get_bool("BROADCAST_AUTO_RESUME", True),
+        "flood_wait": flood_status() or "",
+        "last_error": campaign.get("last_error") or "",
         "sent": counts["sent"], "failed": counts["failed"],
         "blocked": counts["blocked"], "pending": counts["pending"],
         "total": counts["total"], "percent": percent,
@@ -560,7 +628,8 @@ async def run_broadcast(targets: list[int], text: str,
     """
     total = len(targets)
     sent = failed = skipped = 0
-    active = [uid for uid in targets if uid not in blocked_users]
+    retry_blocked = settings.get_bool("BROADCAST_TO_BLOCKED", False)
+    active = list(targets) if retry_blocked else [uid for uid in targets if uid not in blocked_users]
     skipped = total - len(active)
     started = time.time()
     pause = delay if delay is not None else settings.get_float("BROADCAST_DELAY", 0.35)

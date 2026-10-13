@@ -117,6 +117,8 @@ BROADCAST_MAX_FILES = get_int("BROADCAST_MAX_FILES", 5)
 BROADCAST_MEDIA_DELAY = get_float("BROADCAST_MEDIA_DELAY", 1.0)
 BROADCAST_BATCH = get_int("BROADCAST_BATCH", 25)
 BROADCAST_BATCH_PAUSE = get_float("BROADCAST_BATCH_PAUSE", 3.0)
+# Explicit queued jobs always start when the bot reconnects; this gates only jobs
+# whose status was `running` when the process stopped.
 BROADCAST_AUTO_RESUME = get_bool("BROADCAST_AUTO_RESUME", True)
 
 # ---------------------------------------------------------------------- paths
@@ -163,6 +165,7 @@ WEB_ENABLED = get_bool("WEB_ENABLED", True)
 WEB_HOST = get_str("WEB_HOST", get_str("HOST", "0.0.0.0"))
 # Hosting panels (CodeNest, Render, Railway, …) inject $PORT and route to it.
 WEB_PORT = get_int("PORT", get_int("WEB_PORT", 8080))
+# Legacy compatibility only; admin login is password-only and ignores WEB_USER.
 WEB_USER = get_str("WEB_USER", "admin")
 WEB_PASS = get_str("WEB_PASS")
 WEB_SECRET = get_str("WEB_SECRET", "")

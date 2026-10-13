@@ -39,6 +39,8 @@ nano config.env        # API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS, WEB_PASS
 ```
 
 - শুধু বট: `python bot.py` · শুধু সাইট: `python -m web.dashboard`
+- **ব্রডকাস্টের জন্য bot worker চালু থাকা দরকার।** শুধু `python -m web.dashboard` চালালে
+  Telegram পাঠানো হয় না; campaign নিরাপদে queued থাকে। Production-এ combined command ব্যবহার করুন।
 - হোস্টিং প্যানেল (CodeNest / Render / Railway): start command **`python run.py`**,
   পোর্ট নিজে থেকেই `$PORT` ধরে নেয়।
 - বট কানেক্ট না হলেও **সাইট চালু থাকে**; বট নিজে থেকেই আবার কানেক্ট হয়।
@@ -97,7 +99,7 @@ nano config.env        # API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS, WEB_PASS
 
 ## 🛠️ অ্যাডমিন প্যানেল (`/admin`) — সব কাজ এক জায়গায়
 
-লগইন: `WEB_USER` / `WEB_PASS` (HttpOnly cookie; HTTP Basic-ও চলে)। `WEB_PASS` না দিলে server log-এ একবারের temporary password তৈরি হয়। অ্যাডমিন প্যানেল ও bot-credential পরিবর্তন লগইন-সুরক্ষিত।
+অ্যাডমিন প্যানেলের কোনো লিংক public storefront-এ দেখানো হয় না; সরাসরি `/admin` খুললে password form আসে। `WEB_PASS` private environment/config-এ রাখুন—এটি source code-এ দেবেন না। সাইন-ইন password-only, HttpOnly cookie ব্যবহার করে, এবং ভুল চেষ্টায় rate limit আছে। `WEB_PASS` না দিলে server একটি temporary password তৈরি করে; production-এ স্থায়ী secret সেট করুন।
 
 | পেজ | কী করে |
 |---|---|
@@ -242,7 +244,7 @@ FloodWait, কেউ ফাইল পেত না।
 ## ⚙️ সেটিংস — সব কিছু প্যানেল থেকেই
 
 **config.env-এ শুধু দরকারি:** `API_ID`, `API_HASH`, `BOT_TOKEN`, `ADMIN_IDS`
-(+ `WEB_USER`/`WEB_PASS`)। বাকি সব **ডেটাবেজে** থাকে — বটের ⚙️ Settings বা সাইটের
+(+ password-only admin login-এর জন্য `WEB_PASS`)। বাকি সব **ডেটাবেজে** থাকে — বটের ⚙️ Settings বা সাইটের
 `/admin/settings` থেকে বদলালেই কার্যকর, **রিস্টার্ট/ফাইল এডিট লাগে না**।
 নিয়ম: **প্যানেল > config.env > ডিফল্ট** (badge-এ দেখা যায় মান কোথা থেকে আসছে)।
 

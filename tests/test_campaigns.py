@@ -142,6 +142,58 @@ async def test_campaign_resumes_after_a_restart(clean, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_media_fallback_does_not_send_the_probe_file_twice(clean, monkeypatch):
+    from app.services import sender
+    store = _store()
+    file_ids = [db.add_file(store["id"], name, "Video", -100, index)
+                for index, name in enumerate(("First", "Second"), start=1)]
+    campaign = broadcast.create_campaign(ADMIN_ID, text="caption", audience="all",
+                                         files=file_ids, start=False, online_button=0)
+    calls = []
+
+    async def not_cached(row):
+        return row
+
+    async def deliver_once(chat_id, file_id, caption=None, buttons=None):
+        calls.append((chat_id, file_id, caption))
+        return sender.Delivery(True)
+
+    monkeypatch.setattr(sender, "ensure_ready", not_cached)
+    monkeypatch.setattr(sender, "deliver_file_id", deliver_once)
+    assert await broadcast._send_to_user(campaign, 11) == "sent"
+    assert [file_id for _chat, file_id, _caption in calls] == file_ids
+
+
+@pytest.mark.asyncio
+async def test_background_worker_crash_is_recorded_for_admin_retry(clean, monkeypatch):
+    _store()
+    campaign = broadcast.create_campaign(ADMIN_ID, text="hi", audience="all")
+
+    async def broken_worker(*_args, **_kwargs):
+        raise RuntimeError("simulated worker crash")
+
+    monkeypatch.setattr(broadcast, "run_campaign", broken_worker)
+    result = await broadcast.start_campaign(campaign["id"], notify_admin=False)
+    stored = db.campaign(campaign["id"])
+    assert result["status"] == broadcast.FAILED
+    assert stored["status"] == broadcast.FAILED
+    assert "simulated worker crash" in stored["last_error"]
+
+
+def test_queued_campaigns_resume_even_when_running_campaign_resume_is_disabled(clean, monkeypatch):
+    _store()
+    queued = broadcast.create_campaign(ADMIN_ID, text="queued", audience="all")
+    interrupted = broadcast.create_campaign(ADMIN_ID, text="interrupted", audience="all",
+                                            start=False)
+    db.update_campaign(interrupted["id"], status=broadcast.RUNNING)
+    started = []
+    monkeypatch.setattr(broadcast, "start_campaign", lambda campaign_id: started.append(campaign_id))
+
+    assert broadcast.resume_unfinished(include_running=False) == 1
+    assert started == [queued["id"]]
+
+
+@pytest.mark.asyncio
 async def test_cancel_stops_the_send(clean, monkeypatch):
     import asyncio
 

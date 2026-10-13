@@ -77,7 +77,7 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 | `API_ID`, `API_HASH` | my.telegram.org থেকে |
 | `BOT_TOKEN` | BotFather থেকে (নতুন রিভোক করা) |
 | `ADMIN_IDS` | আপনার টেলিগ্রাম numeric ID (একাধিক হলে কমা দিয়ে) |
-| `WEB_USER`, `WEB_PASS` | অ্যাডমিন প্যানেলের লগইন — **শক্ত পাসওয়ার্ড দিন**; না দিলে temporary password startup log-এ আসে |
+| `WEB_PASS` | Password-only admin login; শক্ত, দীর্ঘ random value দিন (৬ সংখ্যার PIN দুর্বল); খালি রাখলে temporary password startup log-এ আসে; ভুল চেষ্টায় rate limit আছে |
 | `WEB_SECRET` | লগইন কুকি সাইন করার গোপন কী (র‍্যান্ডম লম্বা স্ট্রিং) |
 | `WEB_TITLE`, `SITE_URL` | ব্র্যান্ড ও public domain (`Ahad OrgEx`, `https://ahadorgex.onrender.com`) |
 
@@ -130,7 +130,7 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 | 📥 `/admin/download` | SQLite, JSON, CSV |
 | 🛠 `/admin/settings` | সব সেটিং গ্রুপ + এক্সপোর্ট + 🔎 ফোর্স-জয়েন টেস্ট |
 
-লগইন কুকি (`sb_session`) দিয়ে হয়; স্ক্রিপ্ট/মনিটরের জন্য HTTP Basic-ও কাজ করে।
+অ্যাডমিনে সরাসরি `/admin` খুলে password দিয়ে sign in করুন। Public storefront-এ admin link নেই। লগইন HttpOnly cookie ব্যবহার করে এবং ভুল password চেষ্টায় rate limit প্রয়োগ হয়; `WEB_PASS` অবশ্যই Render Environment Variables-এ রাখুন, repository-তে নয়।
 
 ---
 
@@ -147,7 +147,8 @@ DB_FILE=preview.sqlite3 .venv/bin/python tools/seed_demo.py   # (ঐচ্ছি
 ```
 
 - শুধু বট: `python bot.py`
-- শুধু সাইট/প্যানেল: `python -m web.dashboard`
+- শুধু সাইট/প্যানেল: `python -m web.dashboard` (এ মোডে broadcast worker নেই; queued campaign পাঠাবে না)
+- Production broadcast queue-এর জন্য: `python run.py` / `python main.py` — bot ও web একই process-এ চালান
 - টেস্ট: `.venv/bin/python -m pytest tests -q`
 
 ---

@@ -90,6 +90,21 @@ def clean(tmp_path, monkeypatch):
     return monkeypatch
 
 
+def test_bot_online_requires_a_live_telegram_connection(monkeypatch):
+    class FakeClient:
+        def __init__(self, connected):
+            self.connected = connected
+
+        def is_connected(self):
+            return self.connected
+
+    monkeypatch.setattr(runtime, "_client", FakeClient(False))
+    monkeypatch.setattr(runtime, "bot_id", 123)
+    assert runtime.bot_online() is False
+    monkeypatch.setattr(runtime, "_client", FakeClient(True))
+    assert runtime.bot_online() is True
+
+
 def _store_with_video(name="Movies", premium=False):
     store = db.create_store(ADMIN_ID, name)
     db.update_store(store["id"], is_premium=1 if premium else 0)
@@ -1322,7 +1337,8 @@ def test_the_page_carries_the_prefix_as_its_base_url(client_factory):
     page = client.get("/help", headers={"X-Forwarded-Prefix": "/live/u16-b-2576c1"})
     assert page.status_code == 200
     assert '<base href="/live/u16-b-2576c1/">' in page.text
-    assert 'href="admin"' in page.text                  # relative → stays prefixed
+    assert 'href="help"' in page.text                  # public navigation stays prefixed
+    assert 'href="admin"' not in page.text             # admin entry is intentionally hidden
     assert 'href="/admin"' not in page.text             # root-absolute would escape
     plain = client.get("/help")
     assert '<base href="/">' in plain.text              # normal run is unchanged
