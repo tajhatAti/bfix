@@ -33,7 +33,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt -r requirements-web.txt
 
 cp config.env.example config.env
-nano config.env        # API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS, WEB_PASS
+nano config.env        # API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS
 
 .venv/bin/python run.py        # ⭐ বট + ওয়েবসাইট একসাথে
 ```
@@ -99,7 +99,7 @@ nano config.env        # API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS, WEB_PASS
 
 ## 🛠️ অ্যাডমিন প্যানেল (`/admin`) — সব কাজ এক জায়গায়
 
-অ্যাডমিন প্যানেলের কোনো লিংক public storefront-এ দেখানো হয় না; সরাসরি `/admin` খুললে password form আসে। `WEB_PASS` private environment/config-এ রাখুন—এটি source code-এ দেবেন না। সাইন-ইন password-only, HttpOnly cookie ব্যবহার করে, এবং ভুল চেষ্টায় rate limit আছে। `WEB_PASS` না দিলে server একটি temporary password তৈরি করে; production-এ স্থায়ী secret সেট করুন।
+Public storefront-এ কোনো management/admin entry নেই; সরাসরি `/admin` খুললেই password form আসে। Login password `web/dashboard.py`-তে fixed source constant—এটি public repository-তে থাকলে যে কেউ পড়তে পারে। Password-only sign-in, HttpOnly cookie ও rate limiting আছে; এই source-level setup production-এ ঝুঁকিপূর্ণ, তাই repository private রাখুন বা secret store ব্যবহার করুন।
 
 | পেজ | কী করে |
 |---|---|
@@ -243,8 +243,9 @@ FloodWait, কেউ ফাইল পেত না।
 
 ## ⚙️ সেটিংস — সব কিছু প্যানেল থেকেই
 
-**config.env-এ শুধু দরকারি:** `API_ID`, `API_HASH`, `BOT_TOKEN`, `ADMIN_IDS`
-(+ password-only admin login-এর জন্য `WEB_PASS`)। বাকি সব **ডেটাবেজে** থাকে — বটের ⚙️ Settings বা সাইটের
+**config.env-এ শুধু দরকারি:** `API_ID`, `API_HASH`, `BOT_TOKEN`, `ADMIN_IDS`।
+ওয়েব login-এর fixed password `web/dashboard.py`-তে থাকে; এটি environment variable নয়।
+বাকি সব **ডেটাবেজে** থাকে — বটের ⚙️ Settings বা সাইটের
 `/admin/settings` থেকে বদলালেই কার্যকর, **রিস্টার্ট/ফাইল এডিট লাগে না**।
 নিয়ম: **প্যানেল > config.env > ডিফল্ট** (badge-এ দেখা যায় মান কোথা থেকে আসছে)।
 
@@ -355,7 +356,7 @@ tests/                     # ২৮১টি টেস্ট — নেটওয
    (`config.env` যদি একবার রিপোতে চলে যায়, ফাইল মুছে দিলেও **পুরোনো কমিটে মানটা থেকে যায়** —
    তাই টোকেন বদলানো ছাড়া কোনো উপায় নেই। বট নিজেই এটা চিনে লগে ও অ্যাডমিনের DM-এ
    সতর্কবার্তা দেয় — `app/services/secrets_guard.py`।)
-2. `WEB_PASS` শক্ত পাসওয়ার্ড, `WEB_SECRET` র‍্যান্ডম স্ট্রিং।
+2. `/admin`-এর login password source code-এ আছে; public repo হলে সেটি গোপন থাকে না। Cookie-signing key database-এ randomভাবে তৈরি ও সংরক্ষিত হয়।
 3. `/admin` পুরো স্টোর নিয়ন্ত্রণ করে — কখনো পাসওয়ার্ড ছাড়া পাবলিক রাখবেন না।
 
 ---
@@ -565,7 +566,7 @@ DB_FILE=preview.sqlite3 .venv/bin/python tools/seed_demo.py          # ডেম
 |---|---|
 | ইউজার ফাইল পায় না | সেশন কানেক্ট নেই বা অ্যাকাউন্ট চ্যানেলে নেই → প্যানেল → 📲 Session / 🔍 স্ক্যান; না হলে `/admin/self-test` দেখুন |
 | স্টোর লিস্ট আসে না | রেন্ডারে ফলব্যাক আছে; তবু না এলে হোস্টিং প্যানেলের Logs বা `/admin/logs` দেখুন |
-| সাইট খুলছে না | `$PORT` ঠিক আছে কিনা; `WEB_PASS` সেট আছে কিনা; লগে “Website listening on …” আছে কিনা |
+| সাইট খুলছে না | `$PORT` ঠিক আছে কিনা; লগে “Website listening on …” আছে কিনা |
 | চ্যানেল পাওয়া যাচ্ছে না | প্রাইভেট হলে ইনভাইট লিংক দিন + বট/সেশন চ্যানেলে আছে কিনা দেখুন → 📡 Channels → 🔎 চেক |
 | ব্রডকাস্ট থেমে গেল | কিউ ডেটাবেজে থাকে — 🚀 শুরু চাপুন, অথবা বট অনলাইন হলে অটো চালু হবে; 🔁 দিয়ে ফেল করা ইউজার রিট্রাই |
 | `no module named fastapi` | `.venv/bin/pip install -r requirements-web.txt` |

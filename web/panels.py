@@ -555,8 +555,7 @@ async def self_test() -> list[dict]:
         + ("" if runtime.bot_username else " · বট ইউজারনেম এখনো পাওয়া যায়নি"))
     add("টেলিগ্রামের চাপ", not bool(flood_status()), flood_status() or "স্বাভাবিক")
     add("ওয়েব লগইন", True,
-        "WEB_PASS সেট আছে" if cfg.WEB_PASS else
-        "Temporary password server log-এ তৈরি হয় — stable login-এর জন্য WEB_PASS সেট করুন")
+        "Password source code-এ স্থির; public repository-তে এটি দেখা যায়।")
     return checks
 
 

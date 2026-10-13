@@ -165,10 +165,6 @@ WEB_ENABLED = get_bool("WEB_ENABLED", True)
 WEB_HOST = get_str("WEB_HOST", get_str("HOST", "0.0.0.0"))
 # Hosting panels (CodeNest, Render, Railway, …) inject $PORT and route to it.
 WEB_PORT = get_int("PORT", get_int("WEB_PORT", 8080))
-# Legacy compatibility only; admin login is password-only and ignores WEB_USER.
-WEB_USER = get_str("WEB_USER", "admin")
-WEB_PASS = get_str("WEB_PASS")
-WEB_SECRET = get_str("WEB_SECRET", "")
 WEB_SESSION_HOURS = get_int("WEB_SESSION_HOURS", 72)
 WEB_TITLE = get_str("WEB_TITLE", "Ahad OrgEx")
 SITE_URL = get_str("SITE_URL", "https://ahadorgex.onrender.com")

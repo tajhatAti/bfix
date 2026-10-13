@@ -1286,10 +1286,12 @@ def client_factory(tmp_path, monkeypatch):
 
     def make():
         db.bind(str(tmp_path / "panel.sqlite3"))
-        monkeypatch.setattr(cfg, "WEB_USER", "admin")
-        monkeypatch.setattr(cfg, "WEB_PASS", "secret")
-        monkeypatch.setattr(cfg, "WEB_SECRET", "test-secret")
+        monkeypatch.setattr(cfg, "BOT_TOKEN", "123456789:" + "A" * 35)
+        monkeypatch.setattr(cfg, "API_ID", 12345)
+        monkeypatch.setattr(cfg, "API_HASH", "0" * 32)
+        monkeypatch.setattr(cfg, "ADMIN_IDS", [ADMIN_ID])
         import web.dashboard as dashboard
+        monkeypatch.setattr(dashboard, "ADMIN_LOGIN_PASSWORD", "secret")
         return TestClient(dashboard.app)
 
     return make

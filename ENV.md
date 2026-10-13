@@ -128,15 +128,12 @@
 | `WEB_ENABLED` | `true` | সাইট চালু/বন্ধ; hosted `$PORT` থাকলে listener চালু থাকে |
 | `WEB_HOST` | `0.0.0.0` | কোন ঠিকানায় শুনবে (hosting-এ `0.0.0.0` দরকার) |
 | `WEB_PORT` | `8080` | local পোর্ট; hosted service-এর `PORT` অগ্রাধিকার পায় |
-| `WEB_USER` | *(legacy)* | Backward compatibility only; password-only login-এ উপেক্ষা করা হয় |
-| `WEB_PASS` | *(খালি)* | একমাত্র admin login credential; private hosting environment-এ রাখুন, source code-এ নয়; ভুল sign-in-এ rate limit আছে |
-| `WEB_SECRET` | *(খালি)* | admin cookie signing key; production-এ দীর্ঘ random value দিন |
 | `WEB_TITLE` | `Ahad OrgEx` | সাইটের নাম |
 | `SITE_URL` | `https://ahadorgex.onrender.com` | public domain / canonical site URL |
 | `SITE_TAGLINE` | *(খালি)* | public landing page-এর পরিচিতি |
 | `SITE_CONTACT` | *(খালি)* | public support contact |
 
-Public page-এ admin link দেখানো হয় না; সরাসরি `/admin` খুলে password দিন। `/setup`-এর credential-change action লগইন-সুরক্ষিত। Production-এ Render Environment Variables-এ `WEB_PASS` সেট করুন; secret কখনো commit করবেন না। Password ভুল দিলে per-address rate limit প্রয়োগ হয়।
+Public page-এ কোনো management/admin link দেখানো হয় না; সরাসরি `/admin` খুলে password দিন। `/setup`-এর credential-change action লগইন-সুরক্ষিত। Login password `web/dashboard.py`-তে fixed source constant—এটি environment variable নয়। Repository public হলে code পাঠকরা password দেখতে পাবেন; ভুল চেষ্টায় per-address rate limit আছে।
 
 ---
 
@@ -168,7 +165,7 @@ Public page-এ admin link দেখানো হয় না; সরাসর�
 [ ] FORCE_CHANNEL                →  চ্যানেল গ্রো করতে
 [ ] TRIAL_HOURS / CURRENCY       →  সেলের কৌশল
 [ ] INLINE_ENABLED + BotFather /setinline  →  ভাইরাল হওয়ার জন্য
-[ ] WEB_PASS (যদি ড্যাশবোর্ড চান)
+[ ] `/admin` login password source constant যাচাই করুন (web/dashboard.py)
 ```
 
 
@@ -203,7 +200,7 @@ Public page-এ admin link দেখানো হয় না; সরাসর�
 | `WEB_ENABLED` | `true` | সাইট + অ্যাডমিন প্যানেল চালু/বন্ধ। `$PORT` থাকলে (হোস্টিং প্যানেল) সবসময় চালু |
 | `PORT` | `8080` | হোস্টিং প্যানেল যে পোর্ট দেয় — `run.py`/`bot.py`/`main.py` ওটা @ `0.0.0.0`-এ লিসেন করে |
 | `WEB_HOST` | `0.0.0.0` | বাইরে থেকে ঢোকার জন্য `0.0.0.0` রাখুন (প্যানেল প্রিভিউর জন্য জরুরি)। সেট না করলে প্যানেলের দেওয়া `HOST` মানটাই ধরা হয় |
-| `WEB_PASS` | — | অ্যাডমিন প্যানেলের secret; Render/host environment-এ রাখুন, source-এ নয় |
+| Admin login password | source constant | `web/dashboard.py`-তে fixed; কোনো environment variable নয় (public repo-তে পাঠযোগ্য) |
 
 প্যানেলের লাইভ লিঙ্ক `/live/<job>/` আকারে হয় — অ্যাপ `X-Forwarded-Prefix` পড়ে
 প্রতিটা লিঙ্ক ওই প্রিফিক্সের ভিতরে রাখে, তাই মেনু/ফর্ম/রিডাইরেক্ট ভাঙে না।

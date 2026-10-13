@@ -278,6 +278,24 @@ def test_secrets_guard_flags_a_committed_env_file(tmp_path):
     assert secrets_guard.warning_lines(report)
 
 
+def test_secrets_guard_detects_short_hardcoded_admin_password_without_revealing_it(tmp_path):
+    import subprocess
+
+    from app.services import secrets_guard
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "web.py").write_text('ADMIN_LOGIN_PASSWORD = "123456"\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "web.py"], cwd=repo, check=True)
+
+    findings = secrets_guard.scan_repo(repo)
+    assert findings
+    assert findings[0]["file"] == "web.py"
+    assert findings[0]["preview"] == "…"
+    assert "123456" not in str(secrets_guard.warning_lines({"repo_files": findings}))
+
+
 def test_secrets_guard_looks_inside_a_zip(tmp_path):
     """A leaked token zipped up is still a leaked token (the owner uploaded one)."""
     import subprocess

@@ -22,7 +22,7 @@ from app import config as cfg
 from app.logger import log
 
 #: values that must never end up in a public repository
-SECRET_KEYS = ("BOT_TOKEN", "API_HASH", "STRING_SESSION", "WEB_PASS", "WEB_SECRET")
+SECRET_KEYS = ("BOT_TOKEN", "API_HASH", "STRING_SESSION", "ADMIN_LOGIN_PASSWORD")
 PRIVATE_KEYS = ("API_ID", "ADMIN_IDS", "PAY_BKASH", "PAY_NAGAD", "PAY_ROCKET")
 
 # A secret does not have to be in config.env to leak: `website.example.py`, a
@@ -33,7 +33,7 @@ PRIVATE_KEYS = ("API_ID", "ADMIN_IDS", "PAY_BKASH", "PAY_NAGAD", "PAY_ROCKET")
 PATTERNS = (
     # a literal assignment (with or without quotes):
     #   API_HASH = "…"   BOT_TOKEN=123:AA…   STRING_SESSION: '…'
-    r'(API_HASH|BOT_TOKEN|STRING_SESSION|WEB_SECRET)[ \t]*[:=][ \t]*["\']?([A-Za-z0-9_.:+/=-]{20,})["\']?',
+    r'(API_HASH|BOT_TOKEN|STRING_SESSION|ADMIN_LOGIN_PASSWORD)[ \t]*[:=][ \t]*["\']?([A-Za-z0-9_.:+/=-]{4,})["\']?',
     # a bot token anywhere: 1234567890:AAE…
     r"([0-9]{8,10}:[A-Za-z0-9_-]{30,})",
 )
@@ -54,9 +54,12 @@ def _mask(text: str) -> str:
     return f"{raw[:6]}…{raw[-4:]} ({len(raw)} chars)"
 
 
-def looks_real(value: str) -> bool:
+def looks_real(value: str, key: str = "") -> bool:
     """Enough signal that this is a credential and not a template value."""
     raw = (value or "").strip()
+    # A short numeric admin PIN is still a credential; keep its preview masked.
+    if key == "ADMIN_LOGIN_PASSWORD" and re.fullmatch(r"[0-9]{4,12}", raw):
+        return True
     if len(raw) < 20:
         return False
     low = raw.lower()
@@ -66,7 +69,7 @@ def looks_real(value: str) -> bool:
         return True
     if re.fullmatch(r"\d{8,10}:[A-Za-z0-9_-]{30,}", raw):    # bot token shape
         return True
-    # long single-token value (STRING_SESSION, WEB_SECRET) — no spaces, some digits
+    # long single-token value (STRING_SESSION) — no spaces, some digits
     return bool(re.fullmatch(r"[A-Za-z0-9_\-+/=:.]{24,}", raw)) and any(ch.isdigit() for ch in raw)
 
 
@@ -107,7 +110,8 @@ def scan_repo(repo_dir: Path | None = None, limit: int = 25) -> list[dict]:
                 # the *last* group is always the credential itself
                 value = (found.group(found.lastindex) if found and found.lastindex
                          else (found.group(0) if found else ""))
-                if not looks_real(value):
+                key_name = found.group(1) if found and found.lastindex and found.lastindex > 1 else ""
+                if not looks_real(value, key_name):
                     continue
                 key = (path, int(number))
                 if key in seen:
@@ -183,7 +187,8 @@ def scan_archives(repo_dir: Path | None = None, limit: int = 10) -> list[dict]:
                                 continue
                             value = (found.group(found.lastindex) if found.lastindex
                                      else found.group(0))
-                            if not looks_real(value):
+                            key_name = found.group(1) if found.lastindex and found.lastindex > 1 else ""
+                            if not looks_real(value, key_name):
                                 continue
                             findings.append({"file": f"{name}!{member.filename}",
                                              "line": number, "preview": _mask(value),

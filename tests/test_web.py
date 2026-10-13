@@ -21,9 +21,6 @@ from tests.test_flows import ADMIN_ID, USER_ID  # noqa: E402
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     db.bind(str(tmp_path / "web.sqlite3"))
-    monkeypatch.setattr(cfg, "WEB_USER", "admin")
-    monkeypatch.setattr(cfg, "WEB_PASS", "secret")
-    monkeypatch.setattr(cfg, "WEB_SECRET", "test-secret")
     monkeypatch.setattr(cfg, "ADMIN_IDS", [ADMIN_ID])
     monkeypatch.setattr(cfg, "BOT_TOKEN", "123456789:" + "A" * 35)   # website setup already done
     monkeypatch.setattr(cfg, "API_ID", 12345)
@@ -31,6 +28,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "WEB_TITLE", "Test Store")
     monkeypatch.setattr(cfg, "SUPPORT_CONTACT", "")
     import web.dashboard as dashboard
+    monkeypatch.setattr(dashboard, "ADMIN_LOGIN_PASSWORD", "secret")
     dashboard._LOGIN_FAILURES.clear()
     return TestClient(dashboard.app)
 
@@ -818,7 +816,6 @@ def test_a_hosted_job_opens_its_web_port(tmp_path, entry):
         env.pop(leaked, None)
     env.update({
         "PORT": str(port),
-        "WEB_USER": "admin", "WEB_PASS": "demo", "WEB_SECRET": "demo-secret",
         "WEB_TITLE": "Host Test", "DB_FILE": str(tmp_path / "hosted.sqlite3"),
         "BOT_ENV_FILE": str(tmp_path / "empty.env"),        # no real credentials
         "ADMIN_IDS": "999", "WEB_ENABLED": "false",          # a panel only sets PORT

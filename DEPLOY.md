@@ -77,8 +77,6 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 | `API_ID`, `API_HASH` | my.telegram.org থেকে |
 | `BOT_TOKEN` | BotFather থেকে (নতুন রিভোক করা) |
 | `ADMIN_IDS` | আপনার টেলিগ্রাম numeric ID (একাধিক হলে কমা দিয়ে) |
-| `WEB_PASS` | Password-only admin login; শক্ত, দীর্ঘ random value দিন (৬ সংখ্যার PIN দুর্বল); খালি রাখলে temporary password startup log-এ আসে; ভুল চেষ্টায় rate limit আছে |
-| `WEB_SECRET` | লগইন কুকি সাইন করার গোপন কী (র‍্যান্ডম লম্বা স্ট্রিং) |
 | `WEB_TITLE`, `SITE_URL` | ব্র্যান্ড ও public domain (`Ahad OrgEx`, `https://ahadorgex.onrender.com`) |
 
 **আর কিছু লাগবে না।** চ্যানেল জয়েন (প্রাইভেট লিংক সহ), পেমেন্ট নাম্বার, সাপোর্ট
@@ -87,8 +85,7 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 চাইলে আগের মতো `config.env`/Environment Variable-ও ব্যবহার করতে পারেন — প্যানেল থেকে
 সেভ করা মান সেটাকে ওভাররাইড করবে। সব মান এক ক্লিকে `⬇️ config.env হিসেবে এক্সপোর্ট` করা যায়।
 
-`WEB_PASS` না দিলে সিস্টেম একটা টেম্পোরারি পাসওয়ার্ড বানিয়ে **লগে লিখে দেয়** —
-সেটা দেখে লগইন করে পরে অবশ্যই নিজের পাসওয়ার্ড সেট করুন।
+Admin login password `web/dashboard.py`-তে fixed source constant; password environment variable লাগে না। Repository public হওয়ায় code-টি সবাই দেখতে পারে—এটিকে গোপন secret storage হিসেবে ধরবেন না।
 
 ### ডেটা যেন হারিয়ে না যায়
 
@@ -130,7 +127,7 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 | 📥 `/admin/download` | SQLite, JSON, CSV |
 | 🛠 `/admin/settings` | সব সেটিং গ্রুপ + এক্সপোর্ট + 🔎 ফোর্স-জয়েন টেস্ট |
 
-অ্যাডমিনে সরাসরি `/admin` খুলে password দিয়ে sign in করুন। Public storefront-এ admin link নেই। লগইন HttpOnly cookie ব্যবহার করে এবং ভুল password চেষ্টায় rate limit প্রয়োগ হয়; `WEB_PASS` অবশ্যই Render Environment Variables-এ রাখুন, repository-তে নয়।
+সরাসরি `/admin` খুলে password দিয়ে sign in করুন। Public storefront-এ কোনো management/admin link নেই। লগইন HttpOnly cookie ব্যবহার করে এবং ভুল password চেষ্টায় rate limit আছে। Fixed login password `web/dashboard.py`-তে; এটি কোনো environment variable নয়।
 
 ---
 
@@ -140,7 +137,7 @@ CodeNest/RunSpace (আর আপনার নিজের হোস্ট সা
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-web.txt     # বট + সাইট দুইটারই লাইব্রেরি
 
-cp config.env.example config.env                  # API_ID, BOT_TOKEN, ADMIN_IDS, WEB_PASS দিন
+cp config.env.example config.env                  # API_ID, BOT_TOKEN, ADMIN_IDS দিন
 
 DB_FILE=preview.sqlite3 .venv/bin/python tools/seed_demo.py   # (ঐচ্ছিক) ডেমো ডেটা
 .venv/bin/python run.py                                       # দুইটাই চালু

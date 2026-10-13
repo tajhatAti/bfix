@@ -9,7 +9,7 @@ One FastAPI app, two halves:
         /search?q=        search free content
         /health           JSON health check for uptime monitors
 
-    Admin   (login at /admin with WEB_PASS — password form + HttpOnly cookie)
+    Admin   (login only at /admin — fixed password form + HttpOnly cookie)
         /admin                    dashboard: users, views, revenue, alerts
         /admin/broadcast          📢 broadcast studio (create + history + live progress)
         /admin/broadcast/<id>     live progress of one campaign
@@ -57,6 +57,10 @@ from web import panels                                                        # 
 
 STARTED_AT = time.time()
 COOKIE_NAME = "sb_session"
+# Fixed password explicitly requested by the owner. This is tracked source in a
+# public repository, so anyone who can view the repository can read it. Rotate it
+# and move it to a private secret store before exposing the repository to others.
+ADMIN_LOGIN_PASSWORD = "706609"
 # Temporary phone/code login state. String sessions are persisted only after Telegram
 # confirms authorization; pending codes are never written to the database or logs.
 PENDING_SESSIONS: dict[int, dict] = {}
@@ -68,22 +72,12 @@ def _bot_username() -> str:
 
 
 def _panel_password() -> str:
-    """WEB_PASS, or a generated one (logged once) so the panel is never wide open."""
-    if cfg.WEB_PASS:
-        return cfg.WEB_PASS
-    generated = db.get_meta("web_generated_pass", "")
-    if not generated:
-        generated = secrets.token_urlsafe(9)
-        db.set_meta("web_generated_pass", generated)
-        log.warning("WEB_PASS was not set — generated a temporary one: %s "
-                    "(set WEB_PASS in config.env / hosting env to change it)", generated)
-    return generated
+    """Return the owner-configured fixed login password."""
+    return ADMIN_LOGIN_PASSWORD
 
 
 def _panel_secret() -> str:
-    """Use an independent signing key so a short login password cannot forge cookies."""
-    if cfg.WEB_SECRET:
-        return cfg.WEB_SECRET
+    """Use a random database-persisted key so the short PIN cannot forge cookies."""
     saved = db.get_meta("web_generated_secret", "")
     if not saved:
         saved = secrets.token_urlsafe(32)
@@ -2606,10 +2600,9 @@ def main() -> int:
     setup_logging()
     db.bind(cfg.DB_FILE)
     db.migrate_legacy(cfg.LEGACY_DB_FILE)
-    if not cfg.WEB_PASS:
-        log.warning("WEB_PASS is not set — a temporary password was generated (see above).")
     import uvicorn
-    log.info("Website on http://%s:%s (admin panel uses WEB_PASS)", cfg.WEB_HOST, cfg.WEB_PORT)
+    log.info("Website on http://%s:%s (password-only admin login enabled)",
+             cfg.WEB_HOST, cfg.WEB_PORT)
     uvicorn.run(app, host=cfg.WEB_HOST, port=cfg.WEB_PORT, log_level="info")
     return 0
 

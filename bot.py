@@ -196,7 +196,7 @@ def start_website() -> "threading.Thread | None":
                                                access_log=False))
         thread = threading.Thread(target=server.run, name="website", daemon=True)
         thread.start()
-        log.info("Website on http://%s:%s (admin panel uses WEB_PASS) — panel URL: /live/<job>/",
+        log.info("Website on http://%s:%s (password-only admin login) — panel URL: /live/<job>/",
                  cfg.WEB_HOST, cfg.WEB_PORT)
         return thread
     except Exception as exc:
